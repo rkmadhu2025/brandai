@@ -1,0 +1,7 @@
+{
+  "name": "BrandAI - Personal Branding SaaS",
+  "description": "AI-powered personal branding and job automation platform. Generate content, schedule posts, and find jobs automatically.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
