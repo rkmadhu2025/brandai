@@ -37,7 +37,8 @@ import {
   Download,
   List,
   Filter,
-  Plus
+  Plus,
+  Repeat
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Post } from '../types';
@@ -121,13 +122,76 @@ export default function CalendarView({ posts, onPostUpdated, onSchedulePost }: C
   );
 
   const scheduledPosts = useMemo(() => {
-    return posts.filter(post => {
-      if (!post.scheduled_at && post.status !== 'published') return false;
-      if (filterPlatform !== 'all' && post.platform !== filterPlatform) return false;
-      if (filterStatus !== 'all' && post.status !== filterStatus) return false;
-      return true;
+    const allPosts: Post[] = [];
+    
+    posts.forEach(post => {
+      if (!post.scheduled_at && post.status !== 'published') return;
+      if (filterPlatform !== 'all' && post.platform !== filterPlatform) return;
+      if (filterStatus !== 'all' && post.status !== filterStatus) return;
+
+      // Add the original post
+      allPosts.push(post);
+
+      // If it's a recurring post, generate future instances for the current view
+      if (post.recurrence_pattern && post.scheduled_at) {
+        const startDate = parseISO(post.scheduled_at.replace(' ', 'T'));
+        const endDate = post.recurrence_end_date ? parseISO(post.recurrence_end_date) : addMonths(currentDate, 3);
+        
+        // Limit expansion to a reasonable range (e.g., current view +/- 1 month)
+        const viewStart = startOfMonth(subMonths(currentDate, 1));
+        const viewEnd = endOfMonth(addMonths(currentDate, 1));
+        
+        let nextDate = startDate;
+        
+        // Skip to the first instance that might be in our view range to avoid long loops
+        while (nextDate < viewStart) {
+          if (post.recurrence_pattern === 'daily') nextDate = addDays(nextDate, 1);
+          else if (post.recurrence_pattern === 'weekly') nextDate = addWeeks(nextDate, 1);
+          else if (post.recurrence_pattern === 'monthly') nextDate = addMonths(nextDate, 1);
+          else break;
+        }
+
+        // Generate instances
+        let count = 0;
+        const maxInstances = 100; // Safety limit
+        
+        while (nextDate <= endDate && nextDate <= viewEnd && count < maxInstances) {
+          // Move to next instance first (original is already added)
+          if (post.recurrence_pattern === 'daily') nextDate = addDays(nextDate, 1);
+          else if (post.recurrence_pattern === 'weekly') nextDate = addWeeks(nextDate, 1);
+          else if (post.recurrence_pattern === 'monthly') nextDate = addMonths(nextDate, 1);
+          else break;
+
+          if (nextDate > endDate || nextDate > viewEnd) break;
+
+          allPosts.push({
+            ...post,
+            id: post.id * 10000 + count + 1, // Virtual ID
+            scheduled_at: format(nextDate, 'yyyy-MM-dd HH:mm:ss'),
+            status: 'scheduled', // Recurring instances are always scheduled until they pass
+            is_recurring_instance: true // Custom property for UI
+          } as any);
+          
+          count++;
+        }
+      }
     });
-  }, [posts, filterPlatform, filterStatus]);
+
+    // Conflict detection: mark posts that overlap on the same platform
+    const timePlatformMap: Record<string, number[]> = {};
+    allPosts.forEach(post => {
+      if (post.scheduled_at && post.status === 'scheduled') {
+        const key = `${post.scheduled_at}-${post.platform}`;
+        if (!timePlatformMap[key]) timePlatformMap[key] = [];
+        timePlatformMap[key].push(post.id);
+      }
+    });
+
+    return allPosts.map(post => ({
+      ...post,
+      has_conflict: post.scheduled_at && post.status === 'scheduled' && timePlatformMap[`${post.scheduled_at}-${post.platform}`].length > 1
+    }));
+  }, [posts, filterPlatform, filterStatus, currentDate]);
 
   const visiblePosts = useMemo(() => {
     let startDate: Date;
@@ -269,7 +333,22 @@ export default function CalendarView({ posts, onPostUpdated, onSchedulePost }: C
 
     setIsExporting(true);
 
-    const headers = ['Date', 'Time', 'Platform', 'Status', 'Content', 'Image URL', 'Video URL'];
+    const headers = [
+      'Date', 
+      'Time', 
+      'Platform', 
+      'Status', 
+      'Content', 
+      'Likes', 
+      'Comments', 
+      'Shares', 
+      'Reach', 
+      'Impressions', 
+      'Image URL', 
+      'Video URL', 
+      'Recurrence', 
+      'End Date'
+    ];
     
     const csvContent = [
       headers.join(','),
@@ -282,34 +361,48 @@ export default function CalendarView({ posts, onPostUpdated, onSchedulePost }: C
         const formattedDate = format(date, 'yyyy-MM-dd');
         const formattedTime = format(date, 'HH:mm');
         
-        // Escape quotes and wrap content in quotes to handle commas and newlines
-        const escapedContent = `"${post.content.replace(/"/g, '""')}"`;
-        const imageUrl = post.image_url ? `"${post.image_url}"` : '';
-        const videoUrl = post.video_url ? `"${post.video_url}"` : '';
+        const escape = (val: any) => {
+          const str = String(val ?? '');
+          return `"${str.replace(/"/g, '""')}"`;
+        };
         
         return [
-          formattedDate,
-          formattedTime,
-          post.platform,
-          post.status,
-          escapedContent,
-          imageUrl,
-          videoUrl
+          escape(formattedDate),
+          escape(formattedTime),
+          escape(post.platform),
+          escape(post.status),
+          escape(post.content),
+          escape(post.likes),
+          escape(post.comments),
+          escape(post.shares),
+          escape(post.reach),
+          escape(post.impressions),
+          escape(post.image_url),
+          escape(post.video_url),
+          escape(post.recurrence_pattern || 'none'),
+          escape(post.recurrence_end_date)
         ].join(',');
       })
     ].join('\n');
 
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    
-    link.setAttribute('href', url);
-    link.setAttribute('download', `content_calendar_${viewMode}_${format(currentDate, 'yyyy-MM-dd')}.csv`);
-    link.style.visibility = 'hidden';
-    
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    try {
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      
+      const fileName = `content_calendar_${viewMode}_${format(currentDate, 'yyyy-MM-dd')}.csv`;
+      
+      link.setAttribute('href', url);
+      link.setAttribute('download', fileName);
+      link.style.visibility = 'hidden';
+      
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Failed to export CSV:", err);
+    }
 
     setTimeout(() => setIsExporting(false), 2000);
   };
@@ -382,34 +475,11 @@ export default function CalendarView({ posts, onPostUpdated, onSchedulePost }: C
               ))}
             </div>
             {weekDays.map(day => (
-              <div key={day.toISOString()} className={`relative border-r border-slate-100 last:border-r-0 ${isToday(day) ? 'bg-indigo-50/10' : ''}`}>
-                {Array.from({ length: 24 }).map((_, i) => (
-                  <div key={i} className="h-20 border-b border-slate-50"></div>
-                ))}
-                {scheduledPosts
-                  .filter(post => post.scheduled_at && isSameDay(parseISO(post.scheduled_at.replace(' ', 'T')), day))
-                  .map(post => {
-                    const date = parseISO(post.scheduled_at!.replace(' ', 'T'));
-                    const hour = date.getHours();
-                    const minutes = date.getMinutes();
-                    const top = (hour * 80) + (minutes / 60 * 80);
-                    
-                    return (
-                      <div 
-                        key={post.id}
-                        className={`absolute left-1 right-1 p-2 rounded-lg border shadow-sm z-20 overflow-hidden ${getStatusColor(post.status)}`}
-                        style={{ top: `${top}px`, minHeight: '60px' }}
-                      >
-                        <div className="flex items-center justify-between mb-1">
-                          <PlatformIcon platform={post.platform} size={12} />
-                          <span className="text-[10px] font-bold opacity-70">{format(date, 'h:mm a')}</span>
-                        </div>
-                        <p className="text-[10px] font-medium line-clamp-2 leading-tight">{post.content}</p>
-                      </div>
-                    );
-                  })
-                }
-              </div>
+              <CalendarWeekDay 
+                key={day.toISOString()} 
+                day={day} 
+                posts={scheduledPosts.filter(post => post.scheduled_at && isSameDay(parseISO(post.scheduled_at.replace(' ', 'T')), day))}
+              />
             ))}
           </div>
         </div>
@@ -457,6 +527,12 @@ export default function CalendarView({ posts, onPostUpdated, onSchedulePost }: C
                           <span className="text-xs font-bold uppercase tracking-wider opacity-70">{post.platform}</span>
                         </div>
                         <div className="flex items-center gap-2">
+                          {post.has_conflict && (
+                            <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-100 animate-pulse">
+                              <AlertCircle size={10} />
+                              <span className="text-[8px] font-bold uppercase tracking-wider">Conflict</span>
+                            </div>
+                          )}
                           <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-white/50 border border-white/20`}>
                             {post.status}
                           </span>
@@ -927,18 +1003,93 @@ const CalendarDay: FC<CalendarDayProps> = ({ day, isCurrentMonth, isToday, posts
   );
 }
 
-interface DraggablePostProps {
+interface CalendarWeekDayProps {
+  day: Date;
+  posts: Post[];
+}
+
+const CalendarWeekDay: FC<CalendarWeekDayProps> = ({ day, posts }) => {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `date-${format(day, 'yyyy-MM-dd')}`,
+  });
+
+  return (
+    <div 
+      ref={setNodeRef}
+      className={`relative border-r border-slate-100 last:border-r-0 ${isToday(day) ? 'bg-indigo-50/10' : ''} ${isOver ? 'bg-indigo-50 ring-4 ring-indigo-500/20 ring-inset z-10' : ''}`}
+    >
+      {Array.from({ length: 24 }).map((_, i) => (
+        <div key={i} className="h-20 border-b border-slate-50"></div>
+      ))}
+      {posts.map(post => (
+        <DraggableWeekPost key={post.id} post={post} />
+      ))}
+    </div>
+  );
+}
+
+interface DraggableWeekPostProps {
   post: Post;
 }
 
-const DraggablePost: FC<DraggablePostProps> = ({ post }) => {
+const DraggableWeekPost: FC<DraggableWeekPostProps> = ({ post }) => {
+  const isVirtual = post.is_recurring_instance;
   const {
     attributes,
     listeners,
     setNodeRef,
     transform,
     isDragging
-  } = useDraggable({ id: post.id });
+  } = useDraggable({ id: post.id, disabled: isVirtual });
+
+  const style = {
+    transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  const date = parseISO(post.scheduled_at!.replace(' ', 'T'));
+  const hour = date.getHours();
+  const minutes = date.getMinutes();
+  const top = (hour * 80) + (minutes / 60 * 80);
+
+  return (
+    <div 
+      ref={setNodeRef}
+      style={{ ...style, top: `${top}px`, minHeight: '60px' }}
+      {...attributes}
+      {...listeners}
+      className={`absolute left-1 right-1 p-2 rounded-lg border shadow-sm z-20 overflow-hidden cursor-grab active:cursor-grabbing ${getStatusColor(post.status)}`}
+    >
+      <div className="flex items-center justify-between mb-1">
+        <PlatformIcon platform={post.platform} size={12} />
+        <div className="flex items-center gap-1">
+          {post.has_conflict && (
+            <AlertCircle size={10} className="text-rose-500 animate-pulse" title="Scheduling conflict detected" />
+          )}
+          {post.recurrence_pattern && post.recurrence_pattern !== 'none' && (
+            <Repeat size={10} className="text-indigo-500" />
+          )}
+          <span className="text-[10px] font-bold opacity-70">{format(date, 'h:mm a')}</span>
+        </div>
+      </div>
+      <p className="text-[10px] font-medium line-clamp-2 leading-tight">{post.content}</p>
+    </div>
+  );
+}
+
+interface DraggablePostProps {
+  post: Post;
+}
+
+const DraggablePost: FC<DraggablePostProps> = ({ post }) => {
+  const isVirtual = post.is_recurring_instance;
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    isDragging
+  } = useDraggable({ id: post.id, disabled: isVirtual });
 
   const style = {
     transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
@@ -957,7 +1108,15 @@ const DraggablePost: FC<DraggablePostProps> = ({ post }) => {
     >
       <PlatformIcon platform={post.platform} size={10} />
       <span className="flex-1 truncate">{post.content}</span>
-      {date && <span className="opacity-60 shrink-0">{format(date, 'h:mm a')}</span>}
+      <div className="flex items-center gap-1 shrink-0">
+        {post.has_conflict && (
+          <AlertCircle size={8} className="text-rose-500 animate-pulse" title="Scheduling conflict detected" />
+        )}
+        {post.recurrence_pattern && post.recurrence_pattern !== 'none' && (
+          <Repeat size={8} className="text-indigo-500" />
+        )}
+        {date && <span className="opacity-60">{format(date, 'h:mm a')}</span>}
+      </div>
     </div>
   );
 }

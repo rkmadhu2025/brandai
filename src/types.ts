@@ -5,9 +5,16 @@ export interface User {
   bio: string;
   skills: string;
   experience: string;
+  education: string;
+  career_goals: string;
   target_role: string;
   industry?: string;
   job_preferences?: string;
+  linkedin_url?: string;
+  twitter_url?: string;
+  github_url?: string;
+  portfolio_url?: string;
+  is_onboarded?: boolean;
 }
 
 export interface Post {
@@ -16,14 +23,27 @@ export interface Post {
   platform: string;
   image_url: string | null;
   video_url: string | null;
+  thumbnail_url: string | null;
   status: 'draft' | 'scheduled' | 'published' | 'failed';
   scheduled_at: string | null;
+  recurrence_pattern: 'none' | 'daily' | 'weekly' | 'monthly' | null;
+  recurrence_end_date: string | null;
+  is_recurring_instance?: boolean;
   created_at: string;
   likes: number;
   comments: number;
   shares: number;
   reach: number;
   impressions: number;
+  watch_time?: number;
+  audience_retention?: number;
+  click_through_rate?: number;
+  transcription?: string;
+  video_style?: string;
+  video_length?: string;
+  video_aspect_ratio?: string;
+  video_resolution?: string;
+  has_conflict?: boolean;
 }
 
 export interface Project {
@@ -44,6 +64,8 @@ export interface Job {
   url: string | null;
   match_score: number;
   is_saved: boolean;
+  job_type?: string;
+  experience_level?: string;
   created_at: string;
 }
 
@@ -54,6 +76,9 @@ export interface JobEvent {
   type: 'deadline' | 'interview' | 'follow-up' | 'other';
   date: string;
   notes?: string;
+  recurrence_pattern?: 'none' | 'daily' | 'weekly' | 'monthly' | null;
+  recurrence_end_date?: string | null;
+  is_recurring_instance?: boolean;
   created_at: string;
 }
 
@@ -74,6 +99,17 @@ export interface JobAlert {
   enabled: boolean;
   preference: 'email' | 'in-app';
   frequency: 'daily' | 'weekly' | 'instant';
+  created_at: string;
+}
+
+export interface Channel {
+  id: number;
+  user_id: number;
+  platform: string;
+  handle: string;
+  name: string;
+  avatar_url: string;
+  is_connected: boolean;
   created_at: string;
 }
 

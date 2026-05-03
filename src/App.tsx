@@ -4,6 +4,7 @@ import {
   PenTool, 
   Briefcase, 
   FolderKanban, 
+  BarChart2,
   BarChart3, 
   Settings, 
   Plus, 
@@ -16,7 +17,9 @@ import {
   Github,
   Linkedin,
   Twitter,
+  Instagram,
   User as UserIcon,
+  Users,
   Sparkles,
   RefreshCw,
   ArrowRight,
@@ -38,9 +41,21 @@ import {
   Filter,
   FileText,
   Video,
+  Film,
+  Camera,
+  Palette,
+  Square,
+  Timer,
   ChevronDown,
   ChevronUp,
-  CalendarDays
+  CalendarDays,
+  Repeat,
+  Download,
+  Loader2,
+  Bell,
+  ChevronLeft,
+  ChevronRight,
+  Volume2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -62,13 +77,88 @@ import {
 } from 'recharts';
 import { DayPicker } from 'react-day-picker';
 import 'react-day-picker/style.css';
-import { format } from 'date-fns';
-import { Post, Project, Job, User, JobEvent, JobApplication } from './types';
+import { 
+  format,
+  startOfMonth, 
+  endOfMonth, 
+  startOfWeek, 
+  endOfWeek, 
+  eachDayOfInterval, 
+  isSameMonth, 
+  isSameDay, 
+  addMonths, 
+  subMonths, 
+  addWeeks, 
+  subWeeks, 
+  addDays, 
+  subDays,
+  startOfDay,
+  parseISO,
+  isToday
+} from 'date-fns';
+import { 
+  DndContext, 
+  DragOverlay, 
+  closestCorners, 
+  KeyboardSensor, 
+  PointerSensor, 
+  useSensor, 
+  useSensors,
+  DragStartEvent,
+  DragEndEvent,
+  useDraggable,
+  useDroppable
+} from '@dnd-kit/core';
+import { 
+  arrayMove, 
+  SortableContext, 
+  sortableKeyboardCoordinates, 
+  verticalListSortingStrategy,
+  useSortable
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { Post, Project, Job, User, JobEvent, JobApplication, Channel } from './types';
 import { generateSocialPost, optimizeProfile, rewriteContent, generateArticle, generateProfileSummary, generateImage, suggestJobs, suggestContentIdeas, generateVideo, analyzeJobDescription } from './services/geminiService';
 import CalendarView from './components/CalendarView';
 import { PlatformIcon } from './components/PlatformIcon';
+import { UserProfileView } from './components/UserProfileView';
+import { OnboardingView } from './components/OnboardingView';
+import { RichTextEditor } from './components/RichTextEditor';
+import { marked } from 'marked';
+
+const stripHtml = (html: string) => {
+  const tmp = document.createElement('DIV');
+  tmp.innerHTML = html;
+  return tmp.textContent || tmp.innerText || '';
+};
 
 // Removed getPlatformIcon helper function
+
+async function fetchJson(url: string, retries = 3): Promise<any> {
+  console.log(`Fetching: ${url}`);
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error(`Fetch failed for ${url}: ${res.status}`);
+      throw new Error(`HTTP error! status: ${res.status} at ${url}`);
+    }
+    const contentType = res.headers.get("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
+      const text = await res.text();
+      console.error(`Invalid content type for ${url}: ${contentType}`);
+      throw new Error(`Expected JSON but got ${contentType} at ${url}. Body: ${text.substring(0, 100)}...`);
+    }
+    return res.json();
+  } catch (error) {
+    if (retries > 0) {
+      console.warn(`Retrying ${url} (${retries} left)...`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return fetchJson(url, retries - 1);
+    }
+    console.error(`Fetch error for ${url}:`, error);
+    throw error;
+  }
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -81,22 +171,28 @@ export default function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobEvents, setJobEvents] = useState<JobEvent[]>([]);
   const [jobApplications, setJobApplications] = useState<JobApplication[]>([]);
+  const [channels, setChannels] = useState<Channel[]>([]);
   const [followerGrowth, setFollowerGrowth] = useState<any[]>([]);
+  const [isDemoMode, setIsDemoMode] = useState(true);
 
   useEffect(() => {
     fetchData();
+    const interval = setInterval(fetchData, 30000); // Poll every 30 seconds
+    return () => clearInterval(interval);
   }, []);
 
   const fetchData = async () => {
     try {
-      const [u, p, pr, j, je, ja, fg] = await Promise.all([
-        fetch('/api/user').then(res => res.json()),
-        fetch('/api/posts').then(res => res.json()),
-        fetch('/api/projects').then(res => res.json()),
-        fetch('/api/jobs').then(res => res.json()),
-        fetch('/api/job-events').then(res => res.json()),
-        fetch('/api/job-applications').then(res => res.json()),
-        fetch('/api/analytics/follower-growth').then(res => res.json())
+
+      const [u, p, pr, j, je, ja, fg, c] = await Promise.all([
+        fetchJson('/api/user'),
+        fetchJson('/api/posts'),
+        fetchJson('/api/projects'),
+        fetchJson('/api/jobs'),
+        fetchJson('/api/job-events'),
+        fetchJson('/api/job-applications'),
+        fetchJson('/api/analytics/follower-growth'),
+        fetchJson('/api/channels')
       ]);
       setUser(u);
       setPosts(p);
@@ -105,6 +201,7 @@ export default function App() {
       setJobEvents(je);
       setJobApplications(ja);
       setFollowerGrowth(fg);
+      setChannels(c);
     } catch (err) {
       console.error("Fetch error:", err);
     }
@@ -112,9 +209,10 @@ export default function App() {
 
   const renderContent = () => {
     switch (activeTab) {
-      case 'dashboard': return <DashboardView user={user} posts={posts} projects={projects} jobs={jobs} />;
-      case 'profile': return <OptimizerView user={user} onUpdate={fetchData} />;
-      case 'studio': return <StudioView onPostCreated={fetchData} user={user} posts={posts} initialDraft={studioInitialDraft} initialPlatform={studioInitialPlatform} initialDate={studioInitialDate} />;
+      case 'dashboard': return <DashboardView user={user} posts={posts} projects={projects} jobs={jobs} channels={channels} onChannelsChange={fetchData} />;
+      case 'profile': return <UserProfileView user={user} onUpdate={fetchData} />;
+      case 'optimizer': return <OptimizerView user={user} onUpdate={fetchData} />;
+      case 'studio': return <StudioView onPostCreated={fetchData} user={user} posts={posts} channels={channels} initialDraft={studioInitialDraft} initialPlatform={studioInitialPlatform} initialDate={studioInitialDate} />;
       case 'ideas': return <ContentIdeasView user={user} onUseIdea={(draft, platform) => { 
         setStudioInitialDraft(draft);
         setStudioInitialPlatform(platform);
@@ -143,13 +241,19 @@ export default function App() {
         setActiveTab('job-tracker');
       }} />;
       case 'job-tracker': return <JobTrackerView applications={jobApplications} onUpdate={fetchData} />;
+      case 'linkedin': return <LinkedinView posts={posts} onPostCreated={fetchData} channels={channels} onChannelsChange={fetchData} />;
+      case 'youtube': return <YoutubeView posts={posts} onPostCreated={fetchData} channels={channels} onChannelsChange={fetchData} />;
       case 'analytics': return <AnalyticsView posts={posts} followerGrowth={followerGrowth} jobApplications={jobApplications} />;
-      default: return <DashboardView user={user} posts={posts} projects={projects} jobs={jobs} />;
+      default: return <DashboardView user={user} posts={posts} projects={projects} jobs={jobs} channels={channels} onChannelsChange={fetchData} />;
     }
   };
 
   return (
     <div className="flex flex-col md:flex-row h-screen bg-[#F8F9FA] overflow-hidden">
+      {user && !user.is_onboarded && (
+        <OnboardingView user={user} onComplete={fetchData} />
+      )}
+      
       {/* Sidebar - Desktop */}
       <aside className="hidden md:flex w-64 border-r border-slate-200 bg-white flex-col shrink-0">
         <div className="p-6">
@@ -165,12 +269,58 @@ export default function App() {
             <NavItem icon={<PenTool size={20} />} label="Content Studio" active={activeTab === 'studio'} onClick={() => setActiveTab('studio')} />
             <NavItem icon={<Sparkles size={20} />} label="AI Ideas" active={activeTab === 'ideas'} onClick={() => setActiveTab('ideas')} />
             <NavItem icon={<Calendar size={20} />} label="Content Calendar" active={activeTab === 'calendar'} onClick={() => setActiveTab('calendar')} />
-            <NavItem icon={<Sparkles size={20} />} label="Profile Optimizer" active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} />
+            <NavItem icon={<UserIcon size={20} />} label="Profile" active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} />
+            <NavItem icon={<Sparkles size={20} />} label="AI Profile Optimizer" active={activeTab === 'optimizer'} onClick={() => setActiveTab('optimizer')} />
             <NavItem icon={<FolderKanban size={20} />} label="Projects" active={activeTab === 'projects'} onClick={() => setActiveTab('projects')} />
             <NavItem icon={<Briefcase size={20} />} label="Job Finder" active={activeTab === 'jobs'} onClick={() => setActiveTab('jobs')} />
             <NavItem icon={<FileText size={20} />} label="Job Tracker" active={activeTab === 'job-tracker'} onClick={() => setActiveTab('job-tracker')} />
+            <NavItem icon={<Linkedin size={20} />} label="LinkedIn Analytics" active={activeTab === 'linkedin'} onClick={() => setActiveTab('linkedin')} />
+            <NavItem icon={<Youtube size={20} />} label="YouTube" active={activeTab === 'youtube'} onClick={() => setActiveTab('youtube')} />
             <NavItem icon={<BarChart3 size={20} />} label="Analytics" active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')} />
+            
+            <div className="pt-4 mt-4 border-t border-slate-200">
+              <p className="px-3 text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Quick Links</p>
+              <NavItem 
+                icon={<Linkedin size={20} className="text-blue-600" />} 
+                label="Open LinkedIn" 
+                href="https://www.linkedin.com/in/rajkumar-madhu-b604a33b1" 
+                external 
+              />
+              <NavItem 
+                icon={<Youtube size={20} className="text-red-600" />} 
+                label="Open YouTube" 
+                href="https://www.youtube.com/@NexLearnAI" 
+                external 
+              />
+              <NavItem 
+                icon={<Twitter size={20} className="text-sky-500" />} 
+                label="Open Twitter" 
+                href="https://twitter.com/rajkumar_dev" 
+                external 
+              />
+              <NavItem 
+                icon={<Instagram size={20} className="text-pink-600" />} 
+                label="Open Instagram" 
+                href="https://instagram.com" 
+                external 
+              />
+            </div>
           </nav>
+
+          <div className="mt-6 p-4 bg-slate-50 rounded-xl border border-slate-200">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">Demo Mode</span>
+              <button 
+                onClick={() => setIsDemoMode(!isDemoMode)}
+                className={`w-8 h-4 rounded-full relative transition-all ${isDemoMode ? 'bg-indigo-600' : 'bg-slate-300'}`}
+              >
+                <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${isDemoMode ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-500 leading-relaxed">
+              {isDemoMode ? 'Showing sample data to demonstrate features.' : 'Connect your accounts to see real data.'}
+            </p>
+          </div>
         </div>
 
         <div className="mt-auto p-6 border-t border-slate-100">
@@ -203,12 +353,27 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto pb-20 md:pb-0">
         <header className="hidden md:flex h-16 border-b border-slate-200 bg-white/50 backdrop-blur-sm sticky top-0 z-10 items-center justify-between px-8">
-          <h2 className="font-display font-semibold text-lg capitalize">{activeTab.replace('-', ' ')}</h2>
+          <div className="flex flex-col">
+            <div className="flex items-center gap-2 mb-1">
+              <h2 className="font-display font-semibold text-lg capitalize leading-none">{activeTab.replace('-', ' ')}</h2>
+              {isDemoMode && (
+                <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 text-[8px] font-bold uppercase rounded border border-amber-200">Demo Mode</span>
+              )}
+            </div>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{format(new Date(), 'EEEE, MMMM do, yyyy')}</p>
+          </div>
           <div className="flex items-center gap-4">
+            <div className="flex flex-col items-end mr-4">
+              <span className="text-xs font-bold text-indigo-600">{format(new Date(), 'h:mm a')}</span>
+              <span className="text-[10px] text-slate-400 font-medium">Local Time</span>
+            </div>
             <button className="btn-secondary flex items-center gap-2 text-sm">
               <Plus size={16} /> New Project
             </button>
-            <button className="btn-primary flex items-center gap-2 text-sm">
+            <button 
+              onClick={() => setActiveTab('studio')}
+              className="btn-primary flex items-center gap-2 text-sm"
+            >
               <PenTool size={16} /> Create Post
             </button>
           </div>
@@ -236,7 +401,7 @@ export default function App() {
       <nav className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-white border-t border-slate-200 flex items-center justify-around px-2 z-50">
         <MobileNavItem icon={<LayoutDashboard size={20} />} label="Home" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
         <MobileNavItem icon={<PenTool size={20} />} label="Studio" active={activeTab === 'studio'} onClick={() => setActiveTab('studio')} />
-        <MobileNavItem icon={<Sparkles size={20} />} label="Ideas" active={activeTab === 'ideas'} onClick={() => setActiveTab('ideas')} />
+        <MobileNavItem icon={<Youtube size={20} />} label="YouTube" active={activeTab === 'youtube'} onClick={() => setActiveTab('youtube')} />
         <MobileNavItem icon={<Calendar size={20} />} label="Calendar" active={activeTab === 'calendar'} onClick={() => setActiveTab('calendar')} />
         <MobileNavItem icon={<Briefcase size={20} />} label="Jobs" active={activeTab === 'jobs'} onClick={() => setActiveTab('jobs')} />
       </nav>
@@ -260,27 +425,63 @@ function MobileNavItem({ icon, label, active, onClick }: { icon: React.ReactNode
   );
 }
 
-function NavItem({ icon, label, active, onClick }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void }) {
+function NavItem({ icon, label, active, onClick, href, external }: { icon: React.ReactNode, label: string, active?: boolean, onClick?: () => void, href?: string, external?: boolean }) {
+  const content = (
+    <>
+      {icon}
+      <span className="text-sm font-medium flex-1 text-left">{label}</span>
+      {external && <ExternalLink size={14} className="opacity-50" />}
+    </>
+  );
+
+  const className = `w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${
+    active ? 'nav-item-active' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+  }`;
+
+  if (href) {
+    return (
+      <a 
+        href={href} 
+        target={external ? "_blank" : "_self"} 
+        rel={external ? "noopener noreferrer" : ""}
+        className={className}
+        onClick={onClick}
+      >
+        {content}
+      </a>
+    );
+  }
+
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${
-        active ? 'nav-item-active' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-      }`}
+      className={className}
     >
-      {icon}
-      <span className="text-sm font-medium">{label}</span>
+      {content}
     </button>
   );
 }
 
-function DashboardView({ user, posts, projects, jobs }: { user: User | null, posts: Post[], projects: Project[], jobs: Job[] }) {
+function DashboardView({ user, posts, projects, jobs, channels, onChannelsChange }: { 
+  user: User | null, 
+  posts: Post[], 
+  projects: Project[], 
+  jobs: Job[],
+  channels: Channel[],
+  onChannelsChange: () => void
+}) {
   return (
     <div className="space-y-8">
       {/* Welcome Section */}
       <section className="glass-card p-6 md:p-8 bg-indigo-600 text-white border-none overflow-hidden relative">
         <div className="relative z-10">
-          <h1 className="text-2xl md:text-3xl font-display font-bold mb-2">Welcome back, {user?.name?.split(' ')[0] || 'User'}!</h1>
+          <div className="flex items-center justify-between mb-2">
+            <h1 className="text-2xl md:text-3xl font-display font-bold">Welcome back, {user?.name?.split(' ')[0] || 'User'}!</h1>
+            <div className="hidden sm:flex flex-col items-end">
+              <p className="text-[10px] font-bold text-indigo-200 uppercase tracking-widest">{format(new Date(), 'EEEE, MMMM do')}</p>
+              <p className="text-xs font-bold">{format(new Date(), 'h:mm a')}</p>
+            </div>
+          </div>
           <p className="text-indigo-100 max-w-xl text-sm md:text-base">Your personal brand is growing. You have {posts.filter(p => p.status === 'scheduled').length} posts scheduled and {jobs.length} job matches waiting for you.</p>
           <div className="mt-6 flex gap-3 md:gap-4">
             <div className="bg-white/20 backdrop-blur-md px-3 py-2 md:px-4 md:py-2 rounded-lg border border-white/10">
@@ -294,6 +495,60 @@ function DashboardView({ user, posts, projects, jobs }: { user: User | null, pos
           </div>
         </div>
         <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 rounded-full -mr-20 -mt-20 blur-3xl"></div>
+      </section>
+
+      {/* Connected Accounts */}
+      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <a 
+          href="https://www.linkedin.com/in/rajkumar-madhu-b604a33b1" 
+          target="_blank" 
+          rel="noopener noreferrer"
+          className="glass-card p-4 flex items-center gap-4 hover:border-blue-300 transition-colors cursor-pointer group"
+        >
+          <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+            <Linkedin size={20} />
+          </div>
+          <div className="flex-1">
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">LinkedIn</p>
+            <p className="text-sm font-bold text-slate-900">
+              {channels.filter(c => c.platform === 'linkedin').length > 0 
+                ? `${channels.filter(c => c.platform === 'linkedin').length} Connected`
+                : 'Not Connected'}
+            </p>
+          </div>
+          <ExternalLink size={16} className="text-slate-300 group-hover:text-blue-500 transition-colors" />
+        </a>
+        <div className="glass-card p-4 flex items-center gap-4">
+          <div className="w-10 h-10 rounded-full bg-rose-50 flex items-center justify-center text-rose-600">
+            <Youtube size={20} />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">YouTube</p>
+            <p className="text-sm font-bold text-slate-900">
+              {channels.filter(c => c.platform === 'youtube').length > 0 
+                ? `${channels.filter(c => c.platform === 'youtube').length} Connected`
+                : 'Not Connected'}
+            </p>
+          </div>
+        </div>
+        <div className="glass-card p-4 flex items-center gap-4 opacity-50 grayscale">
+          <div className="w-10 h-10 rounded-full bg-sky-50 flex items-center justify-center text-sky-500">
+            <Twitter size={20} />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Twitter / X</p>
+            <p className="text-sm font-bold text-slate-900">Not Connected</p>
+          </div>
+        </div>
+        <div className="glass-card p-4 flex items-center gap-4 opacity-50 grayscale">
+          <div className="w-10 h-10 rounded-full bg-pink-50 flex items-center justify-center text-pink-600">
+            <Instagram size={20} />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Instagram</p>
+            <p className="text-sm font-bold text-slate-900">Not Connected</p>
+          </div>
+        </div>
       </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -328,8 +583,22 @@ function DashboardView({ user, posts, projects, jobs }: { user: User | null, pos
                     </div>
                   )}
                   {post.video_url && (
-                    <div className="mt-3 rounded-lg overflow-hidden border border-slate-100 max-w-xs">
-                      <video src={post.video_url} controls className="w-full h-auto object-cover" />
+                    <div className="mt-3 rounded-lg overflow-hidden border border-slate-100 max-w-xs relative group">
+                      {post.thumbnail_url ? (
+                        <img src={post.thumbnail_url} alt="Thumbnail" className="w-full h-auto object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <video 
+                          src={post.video_url} 
+                          controls 
+                          onError={(e) => console.error("Post video error:", e)}
+                          className="w-full h-auto object-cover" 
+                        />
+                      )}
+                      {post.thumbnail_url && (
+                        <div className="absolute inset-0 bg-black/20 group-hover:bg-black/40 transition-colors flex items-center justify-center pointer-events-none">
+                          <Video size={32} className="text-white opacity-80" />
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -365,9 +634,17 @@ function DashboardView({ user, posts, projects, jobs }: { user: User | null, pos
   );
 }
 
-function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlatform = 'linkedin', initialDate }: { onPostCreated: () => void, user: User | null, posts: Post[], initialDraft?: string, initialPlatform?: string, initialDate?: Date }) {
+function StudioView({ onPostCreated, user, posts, channels, initialDraft = '', initialPlatform = 'linkedin', initialDate }: { 
+  onPostCreated: () => void, 
+  user: User | null, 
+  posts: Post[], 
+  channels: Channel[],
+  initialDraft?: string, 
+  initialPlatform?: string, 
+  initialDate?: Date 
+}) {
   const [mode, setMode] = useState<'generate' | 'rewrite'>('generate');
-  const [contentType, setContentType] = useState<'social' | 'article' | 'summary' | 'shorts'>('social');
+  const [contentType, setContentType] = useState<'social' | 'article' | 'summary' | 'shorts' | 'video'>('social');
   const [topic, setTopic] = useState(initialDraft);
   const [platform, setPlatform] = useState(initialPlatform);
   const [tone, setTone] = useState('professional');
@@ -377,12 +654,18 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
   const [cta, setCta] = useState('');
   const [targetAudience, setTargetAudience] = useState('');
   const [generatedContent, setGeneratedContent] = useState('');
+  const [youtubeTitle, setYoutubeTitle] = useState('');
+  const [youtubeDescription, setYoutubeDescription] = useState('');
 
   useEffect(() => {
     if (initialDraft) setTopic(initialDraft);
     if (initialPlatform) {
       setPlatform(initialPlatform);
-      if (initialPlatform === 'youtube-shorts') setContentType('shorts');
+      if (initialPlatform === 'youtube-shorts') {
+        setContentType('shorts');
+        setVideoAspectRatio('9:16');
+      }
+      else if (initialPlatform === 'youtube') setContentType('video');
       else if (initialPlatform === 'blog') setContentType('article');
       else setContentType('social');
     }
@@ -393,10 +676,21 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
   }, [initialDraft, initialPlatform, initialDate]);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
+  const [thumbnailImage, setThumbnailImage] = useState<string | null>(null);
+  const [videoStyle, setVideoStyle] = useState('cinematic');
+  const [voiceRate, setVoiceRate] = useState(0.8);
+  const [voicePitch, setVoicePitch] = useState(1.0);
+  const [voiceGender, setVoiceGender] = useState<'male' | 'female'>('male');
+  const [videoLength, setVideoLength] = useState('medium');
+  const [videoResolution, setVideoResolution] = useState<'720p' | '1080p'>('720p');
+  const [videoAspectRatio, setVideoAspectRatio] = useState<'16:9' | '9:16'>('16:9');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
+  const [isGeneratingThumbnail, setIsGeneratingThumbnail] = useState(false);
   const [isScheduling, setIsScheduling] = useState(false);
+  const [recurrencePattern, setRecurrencePattern] = useState<'none' | 'daily' | 'weekly' | 'monthly'>('none');
+  const [recurrenceEndDate, setRecurrenceEndDate] = useState<Date | undefined>(undefined);
   const [scheduledDate, setScheduledDate] = useState<Date | undefined>(undefined);
   const [scheduledHour, setScheduledHour] = useState('12');
   const [scheduledMinute, setScheduledMinute] = useState('00');
@@ -404,19 +698,70 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
   const [editingPostId, setEditingPostId] = useState<number | null>(null);
   const [sharePostId, setSharePostId] = useState<number | null>(null);
   const [isCopied, setIsCopied] = useState(false);
+  const [isDraggingImage, setIsDraggingImage] = useState(false);
+  const [isDraggingVideo, setIsDraggingVideo] = useState(false);
+  const [isDraggingThumbnail, setIsDraggingThumbnail] = useState(false);
   const [expandedSections, setExpandedSections] = useState({
     core: true,
-    advanced: false
+    advanced: false,
+    media: false,
+    video: false,
+    voiceover: false,
+    schedule: false
   });
 
-  const toggleSection = (section: 'core' | 'advanced') => {
+  const toggleSection = (section: 'core' | 'advanced' | 'media' | 'video' | 'voiceover' | 'schedule') => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
+  };
+
+  const handleSpeak = () => {
+    const textToSpeak = stripHtml(generatedContent || topic);
+    if (!textToSpeak) return;
+    
+    const utterance = new SpeechSynthesisUtterance(textToSpeak);
+    utterance.rate = voiceRate;
+    utterance.pitch = voicePitch;
+    
+    // Try to find a voice that matches the gender
+    const voices = window.speechSynthesis.getVoices();
+    const selectedVoice = voices.find(v => {
+      const name = v.name.toLowerCase();
+      if (voiceGender === 'male') {
+        return name.includes('male') || name.includes('david') || name.includes('mark') || name.includes('guy');
+      } else {
+        return name.includes('female') || name.includes('zira') || name.includes('samantha');
+      }
+    });
+    
+    if (selectedVoice) {
+      utterance.voice = selectedVoice;
+    }
+    
+    window.speechSynthesis.speak(utterance);
+  };
+  const handleStop = () => {
+    window.speechSynthesis.cancel();
+  };
+
+  const handleShareYouTube = () => {
+    if (!generatedContent) return;
+    // YouTube doesn't have a direct share URL like LinkedIn for text, 
+    // but we can open the upload page or a search for context
+    const url = `https://studio.youtube.com/`;
+    window.open(url, '_blank');
+  };
+
+  const handleShareLinkedIn = () => {
+    if (!generatedContent) return;
+    const text = encodeURIComponent(stripHtml(generatedContent));
+    const url = `https://www.linkedin.com/feed/?shareActive=true&text=${text}`;
+    window.open(url, '_blank');
   };
 
   const handleCopy = async () => {
     if (!generatedContent) return;
     try {
-      await navigator.clipboard.writeText(generatedContent);
+      await navigator.clipboard.writeText(stripHtml(generatedContent));
       setIsCopied(true);
       setTimeout(() => setIsCopied(false), 2000);
     } catch (err) {
@@ -432,17 +777,31 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
     if (mode === 'rewrite') {
       content = await rewriteContent(topic, platform, tone, length, includeKeywords, excludeKeywords, cta, targetAudience);
     } else {
+      let finalTopic = topic;
+      if ((contentType === 'video' || contentType === 'shorts') && (youtubeTitle || youtubeDescription)) {
+        finalTopic = `Title: ${youtubeTitle}\nDescription: ${youtubeDescription}\nTopic: ${topic}`;
+      }
+      
       if (contentType === 'social') {
-        content = await generateSocialPost(topic, platform, tone, length, includeKeywords, excludeKeywords, cta, targetAudience);
+        content = await generateSocialPost(finalTopic, platform, tone, length, includeKeywords, excludeKeywords, cta, targetAudience);
       } else if (contentType === 'shorts') {
-        content = await generateSocialPost(topic, 'youtube-shorts', tone, length, includeKeywords, excludeKeywords, cta, targetAudience);
+        content = await generateSocialPost(finalTopic, 'youtube-shorts', tone, length, includeKeywords, excludeKeywords, cta, targetAudience);
+      } else if (contentType === 'video') {
+        content = await generateSocialPost(finalTopic, 'youtube', tone, length, includeKeywords, excludeKeywords, cta, targetAudience);
       } else if (contentType === 'article') {
-        content = await generateArticle(topic, tone, length, includeKeywords, excludeKeywords, cta, targetAudience);
+        content = await generateArticle(finalTopic, tone, length, includeKeywords, excludeKeywords, cta, targetAudience);
       } else if (contentType === 'summary') {
-        content = await generateProfileSummary(user?.experience || topic, user?.skills || '', tone, length, includeKeywords, excludeKeywords, cta, targetAudience);
+        content = await generateProfileSummary(user?.experience || finalTopic, user?.skills || '', tone, length, includeKeywords, excludeKeywords, cta, targetAudience);
       }
     }
     
+    if (content) {
+      try {
+        content = await marked.parse(content);
+      } catch (e) {
+        console.error('Failed to parse markdown', e);
+      }
+    }
     setGeneratedContent(content);
     setIsProcessing(false);
   };
@@ -454,6 +813,15 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
     const imageUrl = await generateImage(prompt);
     setGeneratedImage(imageUrl);
     setIsGeneratingImage(false);
+  };
+
+  const handleGenerateThumbnail = async () => {
+    if (!topic && !generatedContent) return;
+    setIsGeneratingThumbnail(true);
+    const prompt = `Thumbnail for: ${generatedContent || topic}`;
+    const imageUrl = await generateImage(prompt);
+    setThumbnailImage(imageUrl);
+    setIsGeneratingThumbnail(false);
   };
 
   const handleGenerateVideo = async () => {
@@ -476,8 +844,15 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
     setIsGeneratingVideo(true);
     try {
       const prompt = generatedContent || topic;
-      const videoUrl = await generateVideo(prompt);
+      const videoUrl = await generateVideo(prompt, videoStyle, videoLength, videoResolution, videoAspectRatio);
       setGeneratedVideo(videoUrl);
+      
+      // Auto-generate a thumbnail if none exists
+      if (!thumbnailImage) {
+        const thumbnailPrompt = `Professional thumbnail for video about: ${prompt}`;
+        const imageUrl = await generateImage(thumbnailPrompt);
+        setThumbnailImage(imageUrl);
+      }
     } catch (error: any) {
       if (error.message?.includes("Requested entity was not found")) {
         // Reset key selection state and prompt again if needed
@@ -492,9 +867,18 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
     }
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement> | React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingImage(false);
+    
+    let file: File | undefined;
+    if ('dataTransfer' in e) {
+      file = e.dataTransfer.files?.[0];
+    } else {
+      file = e.target.files?.[0];
+    }
+
+    if (file && file.type.startsWith('image/')) {
       const reader = new FileReader();
       reader.onloadend = () => {
         setGeneratedImage(reader.result as string);
@@ -504,13 +888,33 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
     }
   };
 
-  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
+  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement> | React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingVideo(false);
+
+    let file: File | undefined;
+    if ('dataTransfer' in e) {
+      file = e.dataTransfer.files?.[0];
+    } else {
+      file = e.target.files?.[0];
+    }
+
+    if (file && file.type.startsWith('video/')) {
       const reader = new FileReader();
       reader.onloadend = () => {
         setGeneratedVideo(reader.result as string);
         setGeneratedImage(null);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleThumbnailUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setThumbnailImage(reader.result as string);
       };
       reader.readAsDataURL(file);
     }
@@ -531,7 +935,14 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
         platform: contentType === 'article' ? 'blog' : (contentType === 'shorts' ? 'youtube-shorts' : platform),
         image_url: generatedImage,
         video_url: generatedVideo,
-        status: isScheduling ? 'scheduled' : status
+        thumbnail_url: thumbnailImage,
+        video_style: videoStyle,
+        video_length: videoLength,
+        video_aspect_ratio: videoAspectRatio,
+        video_resolution: videoResolution,
+        status: isScheduling ? 'scheduled' : status,
+        recurrence_pattern: recurrencePattern !== 'none' ? recurrencePattern : null,
+        recurrence_end_date: recurrenceEndDate ? format(recurrenceEndDate, 'yyyy-MM-dd') : null
       };
 
       if (isScheduling && scheduledDate) {
@@ -561,17 +972,26 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
     setGeneratedContent('');
     setGeneratedImage(null);
     setGeneratedVideo(null);
+    setThumbnailImage(null);
     setTopic('');
     setIncludeKeywords('');
     setExcludeKeywords('');
     setCta('');
     setTargetAudience('');
     setIsScheduling(false);
+    setRecurrencePattern('none');
+    setRecurrenceEndDate(undefined);
     setScheduledDate(undefined);
     setScheduledHour('12');
     setScheduledMinute('00');
     setScheduledAmPm('PM');
     setEditingPostId(null);
+  };
+
+  const handleSaveDraft = () => {
+    if (!topic && !generatedContent) return;
+    handleSave('draft');
+    alert('Draft saved successfully!');
   };
 
   return (
@@ -617,126 +1037,189 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
 
           {mode === 'generate' && (
             <div className="flex flex-wrap gap-2 mb-6">
-              {['social', 'shorts', 'article', 'summary'].map((type) => (
+              {[
+                { id: 'social', label: 'Social Post', icon: <Send size={12} /> },
+                { id: 'shorts', label: 'YouTube Shorts', icon: <Video size={12} /> },
+                { id: 'video', label: 'YouTube Video', icon: <Youtube size={12} /> },
+                { id: 'article', label: 'Article', icon: <FileText size={12} /> },
+                { id: 'summary', label: 'Profile Summary', icon: <UserIcon size={12} /> }
+              ].map((item) => (
                 <button
-                  key={type}
+                  key={item.id}
                   onClick={() => {
-                    setContentType(type as any);
-                    if (type === 'shorts') setPlatform('youtube-shorts');
+                    setContentType(item.id as any);
+                    if (item.id === 'shorts') {
+                      setPlatform('youtube-shorts');
+                      setVideoAspectRatio('9:16');
+                    }
+                    if (item.id === 'video') setPlatform('youtube');
                   }}
-                  className={`px-3 py-1.5 rounded-lg text-[10px] md:text-xs font-bold uppercase tracking-wider transition-all ${
-                    contentType === type 
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] md:text-xs font-bold uppercase tracking-wider transition-all ${
+                    contentType === item.id 
                       ? 'bg-indigo-600 text-white shadow-md' 
                       : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
                   }`}
                 >
-                  {type === 'shorts' ? 'YouTube Shorts' : type.replace('social', 'Social').replace('article', 'Article').replace('summary', 'Summary')}
+                  {item.icon}
+                  {item.label}
                 </button>
               ))}
             </div>
           )}
           
-          <div className="space-y-4">
-            {/* Core Settings Section */}
-            <div className="border border-slate-200 rounded-xl overflow-hidden">
-              <button 
-                onClick={() => toggleSection('core')}
-                className="w-full flex items-center justify-between p-3.5 bg-slate-50 hover:bg-slate-100 transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <PenTool size={16} className="text-indigo-600" />
-                  <span className="text-sm font-semibold text-slate-700">Core Settings</span>
-                </div>
-                {expandedSections.core ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
-              </button>
-              <AnimatePresence initial={false}>
-                {expandedSections.core && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.2 }}
-                    className="p-4 space-y-4 border-t border-slate-200"
-                  >
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">
-                        {mode === 'rewrite' 
-                          ? "Paste your content here" 
-                          : contentType === 'summary' 
-                            ? "Additional context (optional)" 
-                            : "What's the topic?"}
-                      </label>
-                      <textarea 
-                        value={topic}
-                        onChange={(e) => setTopic(e.target.value)}
-                        placeholder={
-                          mode === 'rewrite' 
-                            ? "Paste a blog post, project description, or rough draft..." 
-                            : contentType === 'summary'
-                              ? "Add specific details you want to highlight in your summary..."
-                              : contentType === 'article'
-                                ? "e.g. The future of AI in personal branding..."
-                                : "e.g. Just finished building a new AI tool..."
-                        }
-                        className="w-full h-32 p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all resize-none text-sm"
-                      />
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      {contentType === 'social' || mode === 'rewrite' ? (
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Platform</label>
-                          <select 
-                            value={platform}
-                            onChange={(e) => setPlatform(e.target.value)}
-                            className="w-full p-2.5 rounded-xl border border-slate-200 text-sm outline-none bg-white"
-                          >
-                            <option value="linkedin">LinkedIn</option>
-                            <option value="twitter">X (Twitter)</option>
-                            <option value="facebook">Facebook</option>
-                            <option value="instagram">Instagram</option>
-                            <option value="youtube">YouTube</option>
-                            <option value="youtube-shorts">YouTube Shorts</option>
-                          </select>
-                        </div>
-                      ) : (
-                        <div className={(contentType === 'article' || contentType === 'shorts') ? "opacity-50 pointer-events-none" : ""}>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Platform</label>
-                          <div className="w-full p-2.5 rounded-xl border border-slate-200 text-sm bg-slate-50">
-                            {contentType === 'article' ? 'Blog Post' : (contentType === 'shorts' ? 'YouTube Shorts' : 'N/A')}
+            <div className="space-y-4">
+              {/* Core Settings Section */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <button 
+                  onClick={() => toggleSection('core')}
+                  className="w-full flex items-center justify-between p-3.5 bg-slate-50 hover:bg-slate-100 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <PenTool size={16} className="text-indigo-600" />
+                    <span className="text-sm font-semibold text-slate-700">Core Settings</span>
+                  </div>
+                  {expandedSections.core ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+                </button>
+                <AnimatePresence initial={false}>
+                  {expandedSections.core && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="p-4 space-y-4 border-t border-slate-200"
+                    >
+                      {/* YouTube Specific Fields moved inside Core Settings */}
+                      {(contentType === 'video' || contentType === 'shorts') && (
+                        <div className="space-y-4 p-4 bg-indigo-50/50 rounded-xl border border-indigo-100 mb-2">
+                          <div className="flex items-center justify-between mb-2">
+                            <h4 className="text-xs font-bold text-indigo-600 uppercase tracking-wider flex items-center gap-2">
+                              <Youtube size={14} />
+                              YouTube Metadata
+                            </h4>
+                            <button 
+                              onClick={() => {
+                                setYoutubeTitle("DevOps News April 2026: GitHub Actions GA, Istio AI Evolution & Security Alerts!");
+                                setYoutubeDescription("Stay ahead of the curve with this week's DevOps news! We're diving into GitHub Actions' latest GA release, Istio's massive AI-focused update, and the urgent security alert for Trivy users.\n\n#DevOps #GitHub #Istio #CloudNative #AI");
+                                setTopic("Latest DevOps News: GitHub Actions Custom Runner Images GA, Istio AI Evolution with Multicluster & Ambient Mode, Trivy Supply Chain Attack, and Cloudflare Dynamic Workers Beta.");
+                                setContentType('video');
+                                setPlatform('youtube');
+                              }}
+                              className="text-[10px] font-bold text-indigo-600 bg-indigo-100 px-2 py-1 rounded hover:bg-indigo-200 transition-colors"
+                            >
+                              DevOps News Template
+                            </button>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Video Title</label>
+                            <input 
+                              type="text" 
+                              value={youtubeTitle}
+                              onChange={(e) => setYoutubeTitle(e.target.value)}
+                              placeholder="Enter a catchy title..."
+                              className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Video Description</label>
+                            <textarea 
+                              value={youtubeDescription}
+                              onChange={(e) => setYoutubeDescription(e.target.value)}
+                              placeholder="Enter video description..."
+                              className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 min-h-[80px] resize-none"
+                            />
                           </div>
                         </div>
                       )}
                       <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Tone</label>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">
+                          {mode === 'rewrite' 
+                            ? "Paste your content here" 
+                            : contentType === 'summary' 
+                              ? "Additional context (optional)" 
+                              : contentType === 'shorts'
+                                ? "What's your Short about?"
+                                : "What's the topic?"}
+                        </label>
+                        <textarea 
+                          value={topic}
+                          onChange={(e) => setTopic(e.target.value)}
+                          placeholder={
+                            mode === 'rewrite' 
+                              ? "Paste a blog post, project description, or rough draft..." 
+                              : contentType === 'summary'
+                                ? "Add specific details you want to highlight in your summary..."
+                                : contentType === 'shorts'
+                                  ? "e.g. 5 quick tips for React developers, A day in the life of a software engineer..."
+                                  : contentType === 'article'
+                                    ? "e.g. The future of AI in personal branding..."
+                                    : "e.g. Just finished building a new AI tool..."
+                          }
+                          className="w-full h-32 p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all resize-none text-sm"
+                        />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        {contentType === 'social' || mode === 'rewrite' ? (
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Platform</label>
+                            <select 
+                              value={platform}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setPlatform(val);
+                                if (val === 'youtube-shorts') {
+                                  setVideoAspectRatio('9:16');
+                                }
+                              }}
+                              className="w-full p-2.5 rounded-xl border border-slate-200 text-sm outline-none bg-white"
+                            >
+                              <option value="linkedin">LinkedIn</option>
+                              <option value="twitter">X (Twitter)</option>
+                              <option value="facebook">Facebook</option>
+                              <option value="instagram">Instagram</option>
+                              <option value="youtube">YouTube</option>
+                              <option value="youtube-shorts">YouTube Shorts</option>
+                            </select>
+                          </div>
+                        ) : (
+                          <div className={(contentType === 'article' || contentType === 'shorts' || contentType === 'video') ? "opacity-50 pointer-events-none" : ""}>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Platform</label>
+                            <div className="w-full p-2.5 rounded-xl border border-slate-200 text-sm bg-slate-50">
+                              {contentType === 'article' ? 'Blog Post' : (contentType === 'shorts' ? 'YouTube Shorts' : (contentType === 'video' ? 'YouTube Video' : 'N/A'))}
+                            </div>
+                          </div>
+                        )}
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1">Tone</label>
+                          <select 
+                            value={tone}
+                            onChange={(e) => setTone(e.target.value)}
+                            className="w-full p-2.5 rounded-xl border border-slate-200 text-sm outline-none bg-white"
+                          >
+                            <option value="professional">Professional</option>
+                            <option value="casual">Casual</option>
+                            <option value="engaging">Engaging</option>
+                            <option value="educational">Educational</option>
+                            <option value="witty">Witty</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Length</label>
                         <select 
-                          value={tone}
-                          onChange={(e) => setTone(e.target.value)}
+                          value={length}
+                          onChange={(e) => setLength(e.target.value)}
                           className="w-full p-2.5 rounded-xl border border-slate-200 text-sm outline-none bg-white"
                         >
-                          <option value="professional">Professional</option>
-                          <option value="casual">Casual</option>
-                          <option value="engaging">Engaging</option>
-                          <option value="educational">Educational</option>
-                          <option value="witty">Witty</option>
+                          <option value="short">Short</option>
+                          <option value="medium">Medium</option>
+                          <option value="long">Long</option>
                         </select>
                       </div>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Length</label>
-                      <select 
-                        value={length}
-                        onChange={(e) => setLength(e.target.value)}
-                        className="w-full p-2.5 rounded-xl border border-slate-200 text-sm outline-none bg-white"
-                      >
-                        <option value="short">Short</option>
-                        <option value="medium">Medium</option>
-                        <option value="long">Long</option>
-                      </select>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
 
             {/* Advanced Options Section */}
             <div className="border border-slate-200 rounded-xl overflow-hidden">
@@ -809,79 +1292,450 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
               </AnimatePresence>
             </div>
 
-            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
-              <div className="flex items-center justify-between mb-3">
+            {/* Media Assets Section */}
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <button 
+                onClick={() => toggleSection('media')}
+                className="w-full flex items-center justify-between p-3.5 bg-slate-50 hover:bg-slate-100 transition-colors"
+              >
                 <div className="flex items-center gap-2">
-                  <Calendar size={16} className="text-indigo-600" />
-                  <span className="text-sm font-medium text-slate-700">Schedule Post</span>
+                  <ImageIcon size={16} className="text-indigo-600" />
+                  <span className="text-sm font-semibold text-slate-700">Media Assets</span>
                 </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input 
-                    type="checkbox" 
-                    className="sr-only peer" 
-                    checked={isScheduling}
-                    onChange={() => setIsScheduling(!isScheduling)}
-                  />
-                  <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-                </label>
-              </div>
+                {expandedSections.media ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+              </button>
+              <AnimatePresence initial={false}>
+                {expandedSections.media && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="p-4 space-y-4 border-t border-slate-200"
+                  >
+                    <div className="grid grid-cols-2 gap-4">
+                      <label 
+                        onDragOver={(e) => { e.preventDefault(); setIsDraggingImage(true); }}
+                        onDragLeave={() => setIsDraggingImage(false)}
+                        onDrop={handleImageUpload}
+                        className={`flex flex-col items-center justify-center p-4 border-2 border-dashed rounded-xl transition-all cursor-pointer group ${isDraggingImage ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:bg-slate-50 hover:border-indigo-300'}`}
+                      >
+                        <Upload size={20} className={`mb-2 ${isDraggingImage ? 'text-indigo-600' : 'text-slate-400 group-hover:text-indigo-600'}`} />
+                        <span className={`text-xs font-bold ${isDraggingImage ? 'text-indigo-600' : 'text-slate-500 group-hover:text-indigo-600'}`}>Upload Image</span>
+                        <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                      </label>
+                      <label 
+                        onDragOver={(e) => { e.preventDefault(); setIsDraggingVideo(true); }}
+                        onDragLeave={() => setIsDraggingVideo(false)}
+                        onDrop={handleVideoUpload}
+                        className={`flex flex-col items-center justify-center p-4 border-2 border-dashed rounded-xl transition-all cursor-pointer group ${isDraggingVideo ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:bg-slate-50 hover:border-indigo-300'}`}
+                      >
+                        <Video size={20} className={`mb-2 ${isDraggingVideo ? 'text-indigo-600' : 'text-slate-400 group-hover:text-indigo-600'}`} />
+                        <span className={`text-xs font-bold ${isDraggingVideo ? 'text-indigo-600' : 'text-slate-500 group-hover:text-indigo-600'}`}>Upload Video</span>
+                        <input type="file" accept="video/*" className="hidden" onChange={handleVideoUpload} />
+                      </label>
+                      {(contentType === 'video' || contentType === 'shorts' || generatedVideo) && (
+                        <>
+                          <label className="flex flex-col items-center justify-center p-4 border-2 border-dashed border-slate-200 rounded-xl hover:bg-slate-50 hover:border-indigo-300 transition-all cursor-pointer group">
+                            <Upload size={20} className="text-slate-400 group-hover:text-indigo-600 mb-2" />
+                            <span className="text-xs font-bold text-slate-500 group-hover:text-indigo-600">Upload Thumbnail</span>
+                            <input type="file" accept="image/*" className="hidden" onChange={handleThumbnailUpload} />
+                          </label>
+                          <button 
+                            onClick={handleGenerateThumbnail}
+                            disabled={isGeneratingThumbnail || (!topic && !generatedContent)}
+                            className="flex flex-col items-center justify-center p-4 border-2 border-dashed border-slate-200 rounded-xl hover:bg-slate-50 hover:border-indigo-300 transition-all group disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {isGeneratingThumbnail ? (
+                              <Loader2 size={20} className="text-indigo-600 animate-spin mb-2" />
+                            ) : (
+                              <Sparkles size={20} className="text-slate-400 group-hover:text-indigo-600 mb-2" />
+                            )}
+                            <span className="text-xs font-bold text-slate-500 group-hover:text-indigo-600">AI Thumbnail</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {thumbnailImage && (
+                      <div className="space-y-1">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Custom Thumbnail</p>
+                        <div className="relative rounded-lg overflow-hidden border border-slate-200">
+                          <img src={thumbnailImage} alt="Thumbnail" className="w-full h-24 object-cover" referrerPolicy="no-referrer" />
+                          <button 
+                            onClick={() => setThumbnailImage(null)}
+                            className="absolute top-1 right-1 p-1 bg-white/80 rounded-full text-red-500 shadow-sm"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {generatedImage && (
+                      <div className="relative rounded-lg overflow-hidden border border-slate-200">
+                        <img src={generatedImage} alt="Uploaded" className="w-full h-24 object-cover" referrerPolicy="no-referrer" />
+                        <button 
+                          onClick={() => setGeneratedImage(null)}
+                          className="absolute top-1 right-1 p-1 bg-white/80 rounded-full text-red-500 shadow-sm"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    )}
+                    {generatedVideo && (
+                      <div className="relative rounded-lg overflow-hidden border border-slate-200">
+                        <video src={generatedVideo} className="w-full h-24 object-cover" />
+                        <button 
+                          onClick={() => setGeneratedVideo(null)}
+                          className="absolute top-1 right-1 p-1 bg-white/80 rounded-full text-red-500 shadow-sm"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
 
-              {isScheduling && (
-                <motion.div 
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  className="space-y-4 pt-4 border-t border-slate-100"
-                >
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Select Date</label>
-                    <div className="bg-white border border-slate-200 rounded-xl p-2 flex justify-center">
-                      <DayPicker 
-                        mode="single"
-                        selected={scheduledDate}
-                        onSelect={setScheduledDate}
-                        disabled={{ before: new Date() }}
-                        className="text-sm"
-                        classNames={{
-                          day_selected: "bg-indigo-600 text-white hover:bg-indigo-700",
-                          day_today: "font-bold text-indigo-600"
-                        }}
-                      />
+            {/* Video Generation Settings Section */}
+            {(contentType === 'video' || contentType === 'shorts') && (
+              <>
+                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                  <button 
+                    onClick={() => toggleSection('video')}
+                    className="w-full flex items-center justify-between p-3.5 bg-slate-50 hover:bg-slate-100 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Video size={16} className="text-indigo-600" />
+                      <span className="text-sm font-semibold text-slate-700">AI Video Settings</span>
                     </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Select Time</label>
+                    {expandedSections.video ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+                  </button>
+                  <AnimatePresence initial={false}>
+                    {expandedSections.video && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="p-4 space-y-4 border-t border-slate-200"
+                      >
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-2">Video Style</label>
+                            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                              {[
+                                { id: 'cinematic', label: 'Cinematic', icon: <Film size={14} /> },
+                                { id: 'realistic', label: 'Realistic', icon: <Camera size={14} /> },
+                                { id: 'professional', label: 'Professional', icon: <Briefcase size={14} /> },
+                                { id: 'creative', label: 'Creative', icon: <Palette size={14} /> },
+                                { id: 'minimalist', label: 'Minimalist', icon: <Square size={14} /> }
+                              ].map((s) => (
+                                <button
+                                  key={s.id}
+                                  onClick={() => setVideoStyle(s.id)}
+                                  className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all gap-1 ${
+                                    videoStyle === s.id 
+                                      ? 'bg-indigo-50 border-indigo-500 text-indigo-600 shadow-sm' 
+                                      : 'border-slate-200 text-slate-500 hover:border-indigo-300 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  {s.icon}
+                                  <span className="text-[10px] font-bold">{s.label}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-2">Video Length</label>
+                            <div className="grid grid-cols-3 gap-2">
+                              {[
+                                { id: 'short', label: 'Short', desc: '5-10s' },
+                                { id: 'medium', label: 'Medium', desc: '10-15s' },
+                                { id: 'long', label: 'Long', desc: '20-30s' }
+                              ].map((l) => (
+                                <button
+                                  key={l.id}
+                                  onClick={() => setVideoLength(l.id)}
+                                  className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all gap-0.5 ${
+                                    videoLength === l.id 
+                                      ? 'bg-indigo-50 border-indigo-500 text-indigo-600 shadow-sm' 
+                                      : 'border-slate-200 text-slate-500 hover:border-indigo-300 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  <Timer size={14} />
+                                  <span className="text-[10px] font-bold">{l.label}</span>
+                                  <span className="text-[8px] opacity-70">{l.desc}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-sm font-medium text-slate-700 mb-1">Resolution</label>
+                              <select 
+                                value={videoResolution}
+                                onChange={(e) => setVideoResolution(e.target.value as any)}
+                                className="w-full p-2.5 rounded-xl border border-slate-200 text-sm outline-none bg-white"
+                              >
+                                <option value="720p">720p (Standard)</option>
+                                <option value="1080p">1080p (High Def)</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-slate-700 mb-1">Aspect Ratio</label>
+                              <select 
+                                value={videoAspectRatio}
+                                onChange={(e) => setVideoAspectRatio(e.target.value as any)}
+                                className="w-full p-2.5 rounded-xl border border-slate-200 text-sm outline-none bg-white"
+                              >
+                                <option value="16:9">16:9 (Horizontal)</option>
+                                <option value="9:16">9:16 (Vertical)</option>
+                              </select>
+                            </div>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </>
+            )}
+
+            {/* Voiceover Settings Section - Available for all content types */}
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <button
+                onClick={() => toggleSection('voiceover')}
+                className="w-full flex items-center justify-between p-3.5 bg-slate-50 hover:bg-slate-100 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <Volume2 size={16} className="text-indigo-600" />
+                  <span className="text-sm font-semibold text-slate-700">Voiceover Settings</span>
+                </div>
+                {expandedSections.voiceover ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+              </button>
+              <AnimatePresence initial={false}>
+                {expandedSections.voiceover && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="p-4 space-y-4 border-t border-slate-200"
+                  >
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-xs font-medium text-slate-500 mb-1">Voice Gender</label>
+                        <select 
+                          value={voiceGender}
+                          onChange={(e) => setVoiceGender(e.target.value as 'male' | 'female')}
+                          className="w-full p-2 rounded-lg border border-slate-200 text-xs outline-none bg-white"
+                        >
+                          <option value="male">Male</option>
+                          <option value="female">Female</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-500 mb-1">Speed ({voiceRate}x)</label>
+                        <input 
+                          type="range" 
+                          min="0.5" 
+                          max="1.5" 
+                          step="0.1" 
+                          value={voiceRate}
+                          onChange={(e) => setVoiceRate(parseFloat(e.target.value))}
+                          className="w-full"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-500 mb-1">Pitch ({voicePitch})</label>
+                        <input 
+                          type="range" 
+                          min="0.5" 
+                          max="1.5" 
+                          step="0.1" 
+                          value={voicePitch}
+                          onChange={(e) => setVoicePitch(parseFloat(e.target.value))}
+                          className="w-full"
+                        />
+                      </div>
+                    </div>
+
                     <div className="flex gap-2">
-                      <select 
-                        value={scheduledHour}
-                        onChange={e => setScheduledHour(e.target.value)}
-                        className="flex-1 p-2.5 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      <button
+                        onClick={handleSpeak}
+                        className="flex-1 p-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700"
                       >
-                        {Array.from({ length: 12 }, (_, i) => i + 1).map(h => (
-                          <option key={h} value={h.toString().padStart(2, '0')}>{h.toString().padStart(2, '0')}</option>
-                        ))}
-                      </select>
-                      <span className="flex items-center font-bold text-slate-400">:</span>
-                      <select 
-                        value={scheduledMinute}
-                        onChange={e => setScheduledMinute(e.target.value)}
-                        className="flex-1 p-2.5 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                        Speak
+                      </button>
+                      <button
+                        onClick={handleStop}
+                        className="flex-1 p-2 bg-slate-200 text-slate-700 rounded-xl text-sm font-medium hover:bg-slate-300"
                       >
-                        {['00', '15', '30', '45'].map(m => (
-                          <option key={m} value={m}>{m}</option>
-                        ))}
-                      </select>
-                      <select 
-                        value={scheduledAmPm}
-                        onChange={e => setScheduledAmPm(e.target.value)}
-                        className="flex-1 p-2.5 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
-                      >
-                        <option value="AM">AM</option>
-                        <option value="PM">PM</option>
-                      </select>
+                        Stop
+                      </button>
                     </div>
-                  </div>
-                </motion.div>
-              )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Publishing Schedule Section */}
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <button 
+                onClick={() => toggleSection('schedule')}
+                className={`w-full flex items-center justify-between p-3.5 transition-colors ${isScheduling ? 'bg-amber-50' : 'bg-slate-50 hover:bg-slate-100'}`}
+              >
+                <div className="flex items-center gap-2">
+                  <Clock size={16} className={isScheduling ? 'text-amber-600' : 'text-indigo-600'} />
+                  <span className="text-sm font-semibold text-slate-700">Publishing Schedule</span>
+                  {isScheduling && <span className="text-[10px] font-bold text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded uppercase">Active</span>}
+                </div>
+                {expandedSections.schedule ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+              </button>
+              <AnimatePresence initial={false}>
+                {expandedSections.schedule && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="p-4 space-y-4 border-t border-slate-200"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-medium text-slate-600">Enable Scheduling</span>
+                      <button 
+                        onClick={() => setIsScheduling(!isScheduling)}
+                        className={`w-10 h-5 rounded-full transition-colors relative ${isScheduling ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                      >
+                        <motion.div 
+                          animate={{ x: isScheduling ? 22 : 2 }}
+                          className="absolute top-1 w-3 h-3 bg-white rounded-full shadow-sm"
+                        />
+                      </button>
+                    </div>
+
+                    {isScheduling && (
+                      <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Select Date</label>
+                          <div className="flex justify-center border border-slate-100 rounded-xl p-2 bg-slate-50/50">
+                            <DayPicker 
+                              mode="single"
+                              selected={scheduledDate}
+                              onSelect={setScheduledDate}
+                              disabled={{ before: new Date() }}
+                              className="text-xs"
+                              classNames={{
+                                day_selected: "bg-indigo-600 text-white hover:bg-indigo-700",
+                                day_today: "font-bold text-indigo-600 underline",
+                                month_caption: "text-sm font-bold text-slate-800 mb-2",
+                                nav: "flex gap-1",
+                                button_previous: "p-1 hover:bg-slate-100 rounded-md",
+                                button_next: "p-1 hover:bg-slate-100 rounded-md",
+                                head_cell: "text-slate-400 font-medium text-[10px] w-8 py-2",
+                                day: "w-8 h-8 flex items-center justify-center text-xs hover:bg-indigo-50 rounded-md transition-colors"
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Hour</label>
+                            <select 
+                              value={scheduledHour}
+                              onChange={e => setScheduledHour(e.target.value)}
+                              className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500/20"
+                            >
+                              {Array.from({ length: 12 }, (_, i) => i + 1).map(h => (
+                                <option key={h} value={h.toString().padStart(2, '0')}>{h.toString().padStart(2, '0')}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Min</label>
+                            <select 
+                              value={scheduledMinute}
+                              onChange={e => setScheduledMinute(e.target.value)}
+                              className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500/20"
+                            >
+                              {['00', '15', '30', '45'].map(m => (
+                                <option key={m} value={m}>{m}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">AM/PM</label>
+                            <select 
+                              value={scheduledAmPm}
+                              onChange={e => setScheduledAmPm(e.target.value)}
+                              className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500/20"
+                            >
+                              <option value="AM">AM</option>
+                              <option value="PM">PM</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Recurrence</label>
+                          <select 
+                            value={recurrencePattern}
+                            onChange={(e) => setRecurrencePattern(e.target.value as any)}
+                            className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500/20"
+                          >
+                            <option value="none">One-time Post</option>
+                            <option value="daily">Daily</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="monthly">Monthly</option>
+                          </select>
+                        </div>
+
+                        {recurrencePattern !== 'none' && (
+                          <div className="animate-in fade-in slide-in-from-top-2">
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Recurrence End Date</label>
+                            <div className="flex justify-center border border-slate-100 rounded-xl p-2 bg-slate-50/50">
+                              <DayPicker 
+                                mode="single"
+                                selected={recurrenceEndDate}
+                                onSelect={setRecurrenceEndDate}
+                                disabled={{ before: scheduledDate || new Date() }}
+                                className="text-xs"
+                                classNames={{
+                                  day_selected: "bg-indigo-600 text-white hover:bg-indigo-700",
+                                  day_today: "font-bold text-indigo-600 underline",
+                                  month_caption: "text-sm font-bold text-slate-800 mb-2",
+                                  nav: "flex gap-1",
+                                  button_previous: "p-1 hover:bg-slate-100 rounded-md",
+                                  button_next: "p-1 hover:bg-slate-100 rounded-md",
+                                  head_cell: "text-slate-400 font-medium text-[10px] w-8 py-2",
+                                  day: "w-8 h-8 flex items-center justify-center text-xs hover:bg-indigo-50 rounded-md transition-colors"
+                                }}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-100">
+                          <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider mb-1">Selected Schedule</p>
+                          <p className="text-xs font-bold text-slate-800">
+                            {scheduledDate ? format(scheduledDate, 'MMM d, yyyy') : 'Pick a date'} at {scheduledHour}:{scheduledMinute} {scheduledAmPm}
+                          </p>
+                          {recurrencePattern !== 'none' && (
+                            <p className="text-[10px] text-indigo-500 mt-1 font-medium">
+                              Repeats <span className="font-bold">{recurrencePattern}</span> 
+                              {recurrenceEndDate ? ` until ${format(recurrenceEndDate, 'MMM d, yyyy')}` : ' indefinitely'}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             <button 
@@ -890,6 +1744,15 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
               className="btn-primary w-full flex items-center justify-center gap-2 py-3"
             >
               {isProcessing ? 'Processing...' : <><Zap size={18} /> {mode === 'generate' ? 'Generate' : 'Rewrite'} with AI</>}
+            </button>
+
+            <button 
+              onClick={handleSaveDraft}
+              disabled={isProcessing || (!topic && !generatedContent)}
+              className="w-full flex items-center justify-center gap-2 py-2 mt-2 text-slate-600 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all"
+            >
+              <Save size={16} />
+              Save Draft
             </button>
           </div>
         </div>
@@ -900,12 +1763,13 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
               <h3 className="font-display font-bold text-lg">Preview</h3>
-              {isScheduling && scheduledDate && (
-                <div className="flex items-center gap-1.5 px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-[10px] font-bold uppercase tracking-wider border border-amber-200">
-                  <Clock size={10} />
-                  <span>Scheduled</span>
-                </div>
-              )}
+              <button 
+                onClick={() => setIsScheduling(!isScheduling)}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border transition-all ${isScheduling ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'}`}
+              >
+                <Clock size={10} />
+                <span>{isScheduling ? 'Scheduled' : 'Schedule Post'}</span>
+              </button>
             </div>
             <div className="flex gap-2">
               <button 
@@ -939,6 +1803,12 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
                       <span className="mx-2 text-slate-300">|</span>
                       <span className="text-indigo-600">{scheduledHour}:{scheduledMinute} {scheduledAmPm}</span>
                     </p>
+                    {recurrencePattern !== 'none' && (
+                      <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-wider mt-1 flex items-center gap-1">
+                        <Repeat size={10} />
+                        Repeats {recurrencePattern} {recurrenceEndDate ? `until ${format(recurrenceEndDate, 'MMM d, yyyy')}` : 'indefinitely'}
+                      </p>
+                    )}
                   </div>
                   <div className="hidden sm:block px-3 py-1 bg-slate-50 rounded-lg border border-slate-100">
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status</p>
@@ -948,13 +1818,39 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
               )}
 
               <div className="flex flex-col">
-                <textarea 
-                  value={generatedContent}
-                  onChange={(e) => setGeneratedContent(e.target.value)}
+                <RichTextEditor
+                  content={generatedContent}
+                  onChange={setGeneratedContent}
                   placeholder="Write your post content here or use AI to generate it..."
-                  className="w-full min-h-[150px] bg-transparent border-none outline-none text-sm text-slate-700 resize-none leading-relaxed mb-2"
                 />
-                <div className="flex justify-end mb-4">
+                <div className="flex justify-end gap-2 mb-4">
+                  {(contentType === 'video' || contentType === 'shorts') && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleShareYouTube}
+                        disabled={!generatedContent}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[#FF0000] rounded-lg hover:bg-[#CC0000] transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <Youtube size={14} />
+                        <span>Upload to YouTube</span>
+                      </button>
+                      <button
+                        onClick={() => window.open('https://www.youtube.com/', '_blank')}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm"
+                      >
+                        <Youtube size={14} className="text-red-600" />
+                        <span>YouTube Navigator</span>
+                      </button>
+                    </div>
+                  )}
+                  <button
+                    onClick={handleShareLinkedIn}
+                    disabled={!generatedContent}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[#0077b5] rounded-lg hover:bg-[#006097] transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Linkedin size={14} />
+                    <span>Share to LinkedIn</span>
+                  </button>
                   <button
                     onClick={handleCopy}
                     disabled={!generatedContent}
@@ -994,9 +1890,11 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
 
               {generatedVideo && (
                 <div className="relative group mb-4">
+                  {console.log("Rendering video:", generatedVideo)}
                   <video 
                     src={generatedVideo} 
                     controls
+                    onError={(e) => console.error("Video error:", e)}
                     className="w-full rounded-xl border border-slate-200 shadow-sm"
                   />
                   <button 
@@ -1005,37 +1903,131 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
                   >
                     <Trash2 size={16} />
                   </button>
+                  
+                  {isScheduling && scheduledDate && (
+                    <div className="absolute bottom-2 left-2 right-2 p-2 bg-indigo-600/90 backdrop-blur-md rounded-lg text-white text-[10px] font-bold flex items-center gap-2 shadow-lg">
+                      <Clock size={12} />
+                      <span>Scheduled: {format(scheduledDate, 'MMM d, yyyy')} at {scheduledHour}:{scheduledMinute} {scheduledAmPm}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {contentType !== 'summary' && !generatedImage && !generatedVideo && !isGeneratingImage && !isGeneratingVideo && (
+                <div className="mb-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <label 
+                    className={`h-28 border-2 border-dashed rounded-xl flex flex-col items-center justify-center cursor-pointer transition-all group ${isDraggingImage ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:border-indigo-300 hover:bg-indigo-50'}`}
+                    onDragOver={(e) => { e.preventDefault(); setIsDraggingImage(true); }}
+                    onDragLeave={(e) => { e.preventDefault(); setIsDraggingImage(false); }}
+                    onDrop={handleImageUpload}
+                  >
+                    <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center group-hover:bg-indigo-100 transition-colors mb-2">
+                      <ImageIcon size={16} className="text-slate-400 group-hover:text-indigo-600" />
+                    </div>
+                    <p className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Upload or Drag Image</p>
+                    <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                  </label>
+                  <label 
+                    className={`h-28 border-2 border-dashed rounded-xl flex flex-col items-center justify-center cursor-pointer transition-all group ${isDraggingVideo ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:border-indigo-300 hover:bg-indigo-50'}`}
+                    onDragOver={(e) => { e.preventDefault(); setIsDraggingVideo(true); }}
+                    onDragLeave={(e) => { e.preventDefault(); setIsDraggingVideo(false); }}
+                    onDrop={handleVideoUpload}
+                  >
+                    <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center group-hover:bg-indigo-100 transition-colors mb-2">
+                      <Upload size={16} className="text-slate-400 group-hover:text-indigo-600" />
+                    </div>
+                    <p className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Upload or Drag Video</p>
+                    <input type="file" accept="video/*" onChange={handleVideoUpload} className="hidden" />
+                  </label>
                 </div>
               )}
 
               {contentType !== 'summary' && (
                 <>
-                  <div className="flex items-center gap-4 mb-4">
-                    <button 
-                      onClick={handleGenerateImage}
-                      disabled={isGeneratingImage || isGeneratingVideo || (!topic && !generatedContent)}
-                      className="flex items-center gap-2 text-xs font-bold text-indigo-600 hover:text-indigo-700 transition-colors uppercase tracking-wider disabled:opacity-50 disabled:hover:text-indigo-600"
-                    >
-                      {isGeneratingImage ? (
-                        <RefreshCw size={14} className="animate-spin" />
-                      ) : (
+                  <div className="flex flex-wrap items-center gap-4 mb-4">
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={handleGenerateImage}
+                        disabled={isGeneratingImage || isGeneratingVideo || (!topic && !generatedContent)}
+                        className="flex items-center gap-2 text-xs font-bold text-indigo-600 hover:text-indigo-700 transition-colors uppercase tracking-wider disabled:opacity-50 disabled:hover:text-indigo-600"
+                      >
+                        {isGeneratingImage ? (
+                          <RefreshCw size={14} className="animate-spin" />
+                        ) : (
+                          <Sparkles size={14} />
+                        )}
+                        {isGeneratingImage ? 'Generating...' : 'AI Image'}
+                      </button>
+                      <label className={`flex items-center gap-2 text-xs font-bold transition-colors uppercase tracking-wider cursor-pointer ${isGeneratingImage || isGeneratingVideo ? 'opacity-50 pointer-events-none text-slate-400' : 'text-slate-500 hover:text-indigo-600'}`}>
                         <ImageIcon size={14} />
-                      )}
-                      {isGeneratingImage ? 'Generating Image...' : 'AI Image'}
-                    </button>
+                        <span>Upload</span>
+                        <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" disabled={isGeneratingImage || isGeneratingVideo} />
+                      </label>
+                    </div>
+
                     <div className="h-4 w-px bg-slate-200"></div>
-                    <button 
-                      onClick={handleGenerateVideo}
-                      disabled={isGeneratingVideo || isGeneratingImage || (!topic && !generatedContent)}
-                      className="flex items-center gap-2 text-xs font-bold text-indigo-600 hover:text-indigo-700 transition-colors uppercase tracking-wider disabled:opacity-50 disabled:hover:text-indigo-600"
-                    >
-                      {isGeneratingVideo ? (
-                        <RefreshCw size={14} className="animate-spin" />
-                      ) : (
-                        <Video size={14} />
+
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-4">
+                        <button 
+                          onClick={handleGenerateVideo}
+                          disabled={isGeneratingVideo || isGeneratingImage || (!topic && !generatedContent)}
+                          className="flex items-center gap-2 text-xs font-bold text-indigo-600 hover:text-indigo-700 transition-colors uppercase tracking-wider disabled:opacity-50 disabled:hover:text-indigo-600"
+                        >
+                          {isGeneratingVideo ? (
+                            <RefreshCw size={14} className="animate-spin" />
+                          ) : (
+                            <Video size={14} />
+                          )}
+                          {isGeneratingVideo ? 'Generating...' : 'AI Video'}
+                        </button>
+                        <label className={`flex items-center gap-2 text-xs font-bold transition-colors uppercase tracking-wider cursor-pointer ${isGeneratingImage || isGeneratingVideo ? 'opacity-50 pointer-events-none text-slate-400' : 'text-slate-500 hover:text-indigo-600'}`}>
+                          <Upload size={14} />
+                          <span>Upload</span>
+                          <input type="file" accept="video/*" onChange={handleVideoUpload} className="hidden" disabled={isGeneratingImage || isGeneratingVideo} />
+                        </label>
+                      </div>
+                      {!isGeneratingVideo && (
+                        <div className="flex gap-2">
+                          <select 
+                            value={videoStyle}
+                            onChange={(e) => setVideoStyle(e.target.value)}
+                            className="text-[10px] p-1 rounded border border-slate-200 outline-none"
+                          >
+                            <option value="cinematic">Cinematic</option>
+                            <option value="realistic">Realistic</option>
+                            <option value="anime">Anime</option>
+                            <option value="3d-render">3D Render</option>
+                            <option value="abstract">Abstract</option>
+                          </select>
+                          <select 
+                            value={videoLength}
+                            onChange={(e) => setVideoLength(e.target.value)}
+                            className="text-[10px] p-1 rounded border border-slate-200 outline-none"
+                          >
+                            <option value="short">Short (3s)</option>
+                            <option value="medium">Medium (6s)</option>
+                            <option value="long">Long (10s)</option>
+                          </select>
+                          <select 
+                            value={videoResolution}
+                            onChange={(e) => setVideoResolution(e.target.value as '720p' | '1080p')}
+                            className="text-[10px] p-1 rounded border border-slate-200 outline-none"
+                          >
+                            <option value="720p">720p</option>
+                            <option value="1080p">1080p</option>
+                          </select>
+                          <select 
+                            value={videoAspectRatio}
+                            onChange={(e) => setVideoAspectRatio(e.target.value as '16:9' | '9:16')}
+                            className="text-[10px] p-1 rounded border border-slate-200 outline-none"
+                          >
+                            <option value="16:9">16:9</option>
+                            <option value="9:16">9:16</option>
+                          </select>
+                        </div>
                       )}
-                      {isGeneratingVideo ? 'Generating Video...' : 'AI Video'}
-                    </button>
+                    </div>
                     <div className="h-4 w-px bg-slate-200"></div>
                     <label className="flex items-center gap-2 text-xs font-bold text-slate-600 hover:text-slate-800 transition-colors uppercase tracking-wider cursor-pointer">
                       <ImageIcon size={14} />
@@ -1059,82 +2051,47 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
                       />
                     </label>
                     <div className="h-4 w-px bg-slate-200"></div>
-                    <button 
-                      onClick={() => setIsScheduling(!isScheduling)}
-                      className={`flex items-center gap-2 text-xs font-bold transition-colors uppercase tracking-wider ${isScheduling ? 'text-indigo-600' : 'text-slate-600 hover:text-indigo-600'}`}
-                    >
-                      <Calendar size={14} />
-                      {isScheduling ? 'Scheduling On' : 'Schedule'}
-                    </button>
+                    
+                    {(contentType === 'video' || contentType === 'shorts') && (
+                      <div className="flex items-center gap-4">
+                        {thumbnailImage ? (
+                          <div className="relative group">
+                            <img src={thumbnailImage} alt="Thumbnail" className="w-16 h-9 object-cover rounded border border-slate-200" />
+                            <button 
+                              onClick={() => setThumbnailImage(null)}
+                              className="absolute -top-2 -right-2 p-1 bg-white rounded-full text-red-500 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <X size={10} />
+                            </button>
+                          </div>
+                        ) : (
+                          <label 
+                            className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold transition-colors uppercase tracking-wider cursor-pointer border-2 border-dashed rounded-lg ${isDraggingThumbnail ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-200 text-rose-600 hover:border-rose-300 hover:bg-rose-50'}`}
+                            onDragOver={(e) => { e.preventDefault(); setIsDraggingThumbnail(true); }}
+                            onDragLeave={() => setIsDraggingThumbnail(false)}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              setIsDraggingThumbnail(false);
+                              const file = e.dataTransfer.files?.[0];
+                              if (file && file.type.startsWith('image/')) {
+                                const reader = new FileReader();
+                                reader.onloadend = () => setThumbnailImage(reader.result as string);
+                                reader.readAsDataURL(file);
+                              }
+                            }}
+                          >
+                            <ImageIcon size={14} />
+                            Thumbnail
+                            <input type="file" accept="image/*" onChange={handleThumbnailUpload} className="hidden" />
+                          </label>
+                        )}
+                      </div>
+                    )}
+                    
                     <div className="h-4 w-px bg-slate-200"></div>
                   </div>
 
-                  {isScheduling && (
-                    <motion.div 
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      className="mt-4 p-4 bg-white rounded-xl border border-slate-200 shadow-sm space-y-4"
-                    >
-                      <div className="flex flex-col sm:flex-row gap-6">
-                        <div className="flex-1">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Select Date</label>
-                          <div className="flex justify-center sm:justify-start">
-                            <DayPicker 
-                              mode="single"
-                              selected={scheduledDate}
-                              onSelect={setScheduledDate}
-                              disabled={{ before: new Date() }}
-                              className="text-sm"
-                              classNames={{
-                                day_selected: "bg-indigo-600 text-white hover:bg-indigo-700",
-                                day_today: "font-bold text-indigo-600"
-                              }}
-                            />
-                          </div>
-                        </div>
-                        <div className="flex-1 space-y-4">
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Select Time</label>
-                            <div className="flex gap-2">
-                              <select 
-                                value={scheduledHour}
-                                onChange={e => setScheduledHour(e.target.value)}
-                                className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
-                              >
-                                {Array.from({ length: 12 }, (_, i) => i + 1).map(h => (
-                                  <option key={h} value={h.toString().padStart(2, '0')}>{h.toString().padStart(2, '0')}</option>
-                                ))}
-                              </select>
-                              <span className="flex items-center font-bold text-slate-400">:</span>
-                              <select 
-                                value={scheduledMinute}
-                                onChange={e => setScheduledMinute(e.target.value)}
-                                className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
-                              >
-                                {['00', '15', '30', '45'].map(m => (
-                                  <option key={m} value={m}>{m}</option>
-                                ))}
-                              </select>
-                              <select 
-                                value={scheduledAmPm}
-                                onChange={e => setScheduledAmPm(e.target.value)}
-                                className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
-                              >
-                                <option value="AM">AM</option>
-                                <option value="PM">PM</option>
-                              </select>
-                            </div>
-                          </div>
-                          <div className="p-3 bg-indigo-50 rounded-lg border border-indigo-100">
-                            <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider mb-1">Scheduled For</p>
-                            <p className="text-sm font-bold text-slate-800">
-                              {scheduledDate ? format(scheduledDate, 'MMM d, yyyy') : 'No date selected'} at {scheduledHour}:{scheduledMinute} {scheduledAmPm}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
+              {/* Scheduling UI removed from here */}
                 </>
               )}
             </div>
@@ -1193,9 +2150,16 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
                     {post.status}
                   </span>
                   {post.status === 'scheduled' && post.scheduled_at && (
-                    <span className="flex items-center gap-1 text-[10px] font-bold text-amber-600 bg-amber-50/50 px-2 py-1 rounded-full border border-amber-100">
-                      <Clock size={10} /> {format(new Date(post.scheduled_at.replace(' ', 'T')), 'MMM d, h:mm a')}
-                    </span>
+                    <div className="flex flex-col items-end gap-1">
+                      <span className="flex items-center gap-1 text-[10px] font-bold text-amber-600 bg-amber-50/50 px-2 py-1 rounded-full border border-amber-100">
+                        <Clock size={10} /> {format(new Date(post.scheduled_at.replace(' ', 'T')), 'MMM d, h:mm a')}
+                      </span>
+                      {post.recurrence_pattern && (
+                        <span className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 bg-indigo-50/50 px-2 py-1 rounded-full border border-indigo-100">
+                          <Repeat size={10} /> {post.recurrence_pattern} {post.recurrence_end_date ? `until ${format(new Date(post.recurrence_end_date), 'MMM d')}` : ''}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
@@ -1206,8 +2170,17 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
                 </div>
               )}
               {post.video_url && (
-                <div className="mb-4 rounded-lg overflow-hidden border border-slate-100 h-32">
-                  <video src={post.video_url} className="w-full h-full object-cover" />
+                <div className="mb-4 rounded-lg overflow-hidden border border-slate-100 h-32 relative group">
+                  {post.thumbnail_url ? (
+                    <img src={post.thumbnail_url} alt="Thumbnail" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                  ) : (
+                    <video src={post.video_url} className="w-full h-full object-cover" />
+                  )}
+                  {post.thumbnail_url && (
+                    <div className="absolute inset-0 bg-black/20 group-hover:bg-black/40 transition-colors flex items-center justify-center pointer-events-none">
+                      <Video size={24} className="text-white opacity-80" />
+                    </div>
+                  )}
                 </div>
               )}
               <div className="flex items-center gap-2 mt-auto pt-4 border-t border-slate-100">
@@ -1217,6 +2190,7 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
                     setGeneratedContent(post.content);
                     setGeneratedImage(post.image_url);
                     setGeneratedVideo(post.video_url);
+                    setThumbnailImage(post.thumbnail_url);
                     setPlatform(post.platform);
                     setContentType(post.platform === 'blog' ? 'article' : 'social');
                     if (post.status === 'scheduled' && post.scheduled_at) {
@@ -1231,8 +2205,12 @@ function StudioView({ onPostCreated, user, posts, initialDraft = '', initialPlat
                       setScheduledHour(hourNum.toString().padStart(2, '0'));
                       setScheduledMinute(m);
                       setScheduledAmPm(ampm);
+                      setRecurrencePattern(post.recurrence_pattern || 'none');
+                      setRecurrenceEndDate(post.recurrence_end_date ? new Date(post.recurrence_end_date) : undefined);
                     } else {
                       setIsScheduling(false);
+                      setRecurrencePattern('none');
+                      setRecurrenceEndDate(undefined);
                     }
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                   }}
@@ -1384,12 +2362,36 @@ function OptimizerView({ user, onUpdate }: { user: User | null, onUpdate: () => 
     }, 2000);
   };
 
+  const calculateScore = () => {
+    let score = 0;
+    if (profile.name) score += 10;
+    if (profile.target_role) score += 20;
+    if (profile.bio && profile.bio.length > 50) score += 30;
+    if (profile.skills && profile.skills.split(',').length >= 3) score += 20;
+    if (profile.experience && profile.experience.length > 50) score += 20;
+    return score;
+  };
+
+  const profileScore = calculateScore();
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 md:gap-8">
       <div className="space-y-6">
         <div className="glass-card p-5 md:p-6">
           <div className="flex items-center justify-between mb-6">
-            <h3 className="font-display font-bold text-lg">Your Profile</h3>
+            <div>
+              <h3 className="font-display font-bold text-lg">Your Profile</h3>
+              <div className="flex items-center gap-2 mt-1">
+                <div className="w-24 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: `${profileScore}%` }}
+                    className={`h-full ${profileScore > 80 ? 'bg-emerald-500' : profileScore > 50 ? 'bg-amber-500' : 'bg-rose-500'}`}
+                  />
+                </div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{profileScore}% Complete</span>
+              </div>
+            </div>
             <div className="flex items-center gap-4">
               {applyMessage && (
                 <motion.span 
@@ -1835,13 +2837,18 @@ function JobsView({ user, jobs, jobEvents, posts, onSearch, onEventsChange, onAd
   const [searchLocation, setSearchLocation] = useState('');
   const [searchIndustry, setSearchIndustry] = useState('');
   const [showPreferences, setShowPreferences] = useState(false);
+  const [showJobAlerts, setShowJobAlerts] = useState(true);
+  const [filterKeyword, setFilterKeyword] = useState('');
   const [filterTitle, setFilterTitle] = useState('');
   const [filterCompany, setFilterCompany] = useState('');
   const [filterLocation, setFilterLocation] = useState('');
+  const [applySavedPreferences, setApplySavedPreferences] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [showNotificationPrompt, setShowNotificationPrompt] = useState(false);
   const [notificationPreference, setNotificationPreference] = useState<'email' | 'in-app'>('email');
   const [notificationFrequency, setNotificationFrequency] = useState<'daily' | 'weekly' | 'instant'>('daily');
+  const [isSavingAlerts, setIsSavingAlerts] = useState(false);
+  const [showSavedIndicator, setShowSavedIndicator] = useState(false);
 
   useEffect(() => {
     const fetchAlerts = async () => {
@@ -1851,6 +2858,10 @@ function JobsView({ user, jobs, jobEvents, posts, onSearch, onEventsChange, onAd
         setNotificationsEnabled(data.enabled === 1);
         setNotificationPreference(data.preference);
         setNotificationFrequency(data.frequency);
+        // Show prompt if not enabled and never prompted before (using local storage for simplicity)
+        if (data.enabled === 0 && !localStorage.getItem('job_alerts_prompted')) {
+          setShowNotificationPrompt(true);
+        }
       } catch (e) {
         console.error("Failed to fetch job alerts", e);
       }
@@ -1859,6 +2870,7 @@ function JobsView({ user, jobs, jobEvents, posts, onSearch, onEventsChange, onAd
   }, []);
 
   const handleSaveAlerts = async (enabled: boolean, preference: 'email' | 'in-app', frequency: 'daily' | 'weekly' | 'instant') => {
+    setIsSavingAlerts(true);
     try {
       await fetch('/api/job-alerts', {
         method: 'POST',
@@ -1869,8 +2881,14 @@ function JobsView({ user, jobs, jobEvents, posts, onSearch, onEventsChange, onAd
       setNotificationPreference(preference);
       setNotificationFrequency(frequency);
       setShowNotificationPrompt(false);
+      localStorage.setItem('job_alerts_prompted', 'true');
+      
+      setShowSavedIndicator(true);
+      setTimeout(() => setShowSavedIndicator(false), 2000);
     } catch (e) {
       console.error("Failed to save job alerts", e);
+    } finally {
+      setIsSavingAlerts(false);
     }
   };
   const [minMatchScore, setMinMatchScore] = useState(70);
@@ -1981,8 +2999,16 @@ function JobsView({ user, jobs, jobEvents, posts, onSearch, onEventsChange, onAd
             <button 
               onClick={() => setShowPreferences(!showPreferences)}
               className={`p-2 rounded-xl border transition-all ${showPreferences ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-white border-slate-200 text-slate-400 hover:text-indigo-600'}`}
+              title="Job Preferences"
             >
               <SlidersHorizontal size={20} />
+            </button>
+            <button 
+              onClick={() => setShowJobAlerts(!showJobAlerts)}
+              className={`p-2 rounded-xl border transition-all ${showJobAlerts ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-white border-slate-200 text-slate-400 hover:text-indigo-600'}`}
+              title="Job Alerts"
+            >
+              <Bell size={20} />
             </button>
             <button 
               onClick={() => handleSearch()}
@@ -2055,6 +3081,126 @@ function JobsView({ user, jobs, jobEvents, posts, onSearch, onEventsChange, onAd
           </div>
         </form>
       </div>
+
+      <AnimatePresence>
+        {showNotificationPrompt && !notificationsEnabled && (
+          <motion.div 
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="mb-6"
+          >
+            <div className="bg-indigo-600 p-4 rounded-2xl text-white flex items-center justify-between shadow-lg shadow-indigo-200">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-white/20 rounded-xl">
+                  <Bell size={20} />
+                </div>
+                <div>
+                  <p className="font-bold text-sm">Never miss a job match!</p>
+                  <p className="text-xs text-indigo-100">Enable job alerts to get notified when we find the perfect role for you.</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => {
+                    setShowNotificationPrompt(false);
+                    localStorage.setItem('job_alerts_prompted', 'true');
+                  }}
+                  className="px-3 py-1.5 text-xs font-bold hover:bg-white/10 rounded-lg transition-all"
+                >
+                  Later
+                </button>
+                <button 
+                  onClick={() => {
+                    setShowJobAlerts(true);
+                    setShowNotificationPrompt(false);
+                  }}
+                  className="px-4 py-1.5 bg-white text-indigo-600 text-xs font-bold rounded-lg shadow-sm hover:bg-indigo-50 transition-all"
+                >
+                  Enable Now
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showJobAlerts && (
+          <motion.div 
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden mb-6"
+          >
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm grid grid-cols-1 md:grid-cols-3 gap-6 relative">
+              {showSavedIndicator && (
+                <motion.div 
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="absolute top-2 right-4 text-[10px] font-bold text-green-600 flex items-center gap-1"
+                >
+                  <Check size={12} /> Settings Saved
+                </motion.div>
+              )}
+              
+              <div className="flex flex-col gap-4">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-bold text-slate-700 uppercase tracking-widest">Enable Alerts</label>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      className="sr-only peer" 
+                      checked={notificationsEnabled}
+                      disabled={isSavingAlerts}
+                      onChange={(e) => handleSaveAlerts(e.target.checked, notificationPreference, notificationFrequency)}
+                    />
+                    <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+                  </label>
+                </div>
+                <p className="text-xs text-slate-500">Get notified when new jobs matching your profile are found.</p>
+              </div>
+
+              <div className={`flex flex-col gap-3 ${!notificationsEnabled || isSavingAlerts ? 'opacity-50 pointer-events-none' : ''}`}>
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Delivery Method</label>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => handleSaveAlerts(true, 'email', notificationFrequency)}
+                    className={`flex-1 px-3 py-2 text-xs font-bold rounded-lg border transition-all ${notificationPreference === 'email' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}
+                  >
+                    Email
+                  </button>
+                  <button 
+                    onClick={() => handleSaveAlerts(true, 'in-app', notificationFrequency)}
+                    className={`flex-1 px-3 py-2 text-xs font-bold rounded-lg border transition-all ${notificationPreference === 'in-app' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}
+                  >
+                    In-App
+                  </button>
+                </div>
+              </div>
+
+              <div className={`flex flex-col gap-3 ${!notificationsEnabled || isSavingAlerts ? 'opacity-50 pointer-events-none' : ''}`}>
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Frequency</label>
+                <div className="flex gap-2">
+                  {['daily', 'weekly', 'instant'].map((freq) => (
+                    <button
+                      key={freq}
+                      onClick={() => handleSaveAlerts(true, notificationPreference, freq as any)}
+                      className={`flex-1 px-2 py-2 text-[10px] font-bold uppercase tracking-wider rounded-lg border transition-all ${
+                        notificationFrequency === freq 
+                          ? 'bg-indigo-600 text-white border-indigo-600' 
+                          : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'
+                      }`}
+                    >
+                      {freq}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {showPreferences && (
@@ -2137,152 +3283,108 @@ function JobsView({ user, jobs, jobEvents, posts, onSearch, onEventsChange, onAd
         <JobCalendarView jobEvents={jobEvents} jobs={jobs} onEventsChange={onEventsChange} />
       ) : (
         <>
-          <div className="flex flex-col sm:flex-row gap-4 items-center justify-between bg-white p-4 rounded-xl border border-slate-200">
-        <div className="flex flex-col sm:flex-row flex-1 gap-4 w-full sm:w-auto">
-          <div className="relative flex-1">
-            <Briefcase className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-            <input 
-              type="text" 
-              placeholder="Filter by title..." 
-              value={filterTitle}
-              onChange={e => setFilterTitle(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
-            />
+          <div className="flex flex-col w-full gap-4 bg-white p-4 rounded-xl border border-slate-200">
+            <div className="flex flex-col sm:flex-row gap-4 items-center justify-between w-full">
+              <div className="relative flex-1 w-full">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <input 
+                  type="text" 
+                  placeholder="Filter by keywords (e.g. Python, Remote)..." 
+                  value={filterKeyword}
+                  onChange={e => setFilterKeyword(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Apply Saved Preferences</label>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    className="sr-only peer" 
+                    checked={applySavedPreferences}
+                    onChange={(e) => setApplySavedPreferences(e.target.checked)}
+                  />
+                  <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+                </label>
+              </div>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-4 w-full">
+              <div className="relative flex-1">
+                <Briefcase className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <input 
+                  type="text" 
+                  aria-label="Filter by title"
+                  placeholder="Filter by title..." 
+                  value={filterTitle}
+                  onChange={e => setFilterTitle(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+              <div className="relative flex-1">
+                <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <input 
+                  type="text" 
+                  aria-label="Filter by company"
+                  placeholder="Filter by company..." 
+                  value={filterCompany}
+                  onChange={e => setFilterCompany(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+              <div className="relative flex-1">
+                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <input 
+                  type="text" 
+                  aria-label="Filter by location"
+                  placeholder="Filter by location..." 
+                  value={filterLocation}
+                  onChange={e => setFilterLocation(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+            </div>
           </div>
-          <div className="relative flex-1">
-            <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-            <input 
-              type="text" 
-              placeholder="Filter by company..." 
-              value={filterCompany}
-              onChange={e => setFilterCompany(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
-            />
-          </div>
-          <div className="relative flex-1">
-            <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-            <input 
-              type="text" 
-              placeholder="Filter by location..." 
-              value={filterLocation}
-              onChange={e => setFilterLocation(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500/20"
-            />
-          </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <span className="text-sm font-medium text-slate-700">Job Alerts</span>
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input 
-              type="checkbox" 
-              className="sr-only peer" 
-              checked={notificationsEnabled}
-              onChange={() => {
-                if (notificationsEnabled) {
-                  handleSaveAlerts(false, notificationPreference, notificationFrequency);
-                } else {
-                  setShowNotificationPrompt(true);
-                }
-              }}
-            />
-            <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-          </label>
-        </div>
-      </div>
 
       <AnimatePresence>
-        {showNotificationPrompt && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          >
-            <motion.div 
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-xl"
-            >
-              <h3 className="font-display font-bold text-lg mb-2">Configure Job Alerts</h3>
-              <p className="text-sm text-slate-500 mb-6">How would you like to receive your job matches?</p>
-              
-              <div className="space-y-3 mb-6">
-                <label className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${notificationPreference === 'email' ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:bg-slate-50'}`}>
-                  <input 
-                    type="radio" 
-                    name="notification_pref" 
-                    value="email" 
-                    checked={notificationPreference === 'email'}
-                    onChange={() => setNotificationPreference('email')}
-                    className="text-indigo-600 focus:ring-indigo-500"
-                  />
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">Email</p>
-                    <p className="text-xs text-slate-500">Daily digest of top matches</p>
-                  </div>
-                </label>
-                
-                <label className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${notificationPreference === 'in-app' ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:bg-slate-50'}`}>
-                  <input 
-                    type="radio" 
-                    name="notification_pref" 
-                    value="in-app" 
-                    checked={notificationPreference === 'in-app'}
-                    onChange={() => setNotificationPreference('in-app')}
-                    className="text-indigo-600 focus:ring-indigo-500"
-                  />
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">In-App</p>
-                    <p className="text-xs text-slate-500">Notifications within the app</p>
-                  </div>
-                </label>
-              </div>
-
-              <div className="mb-6">
-                <p className="text-sm font-medium text-slate-900 mb-3">Notification Frequency</p>
-                <div className="flex gap-2">
-                  {['daily', 'weekly', 'instant'].map((freq) => (
-                    <button
-                      key={freq}
-                      onClick={() => setNotificationFrequency(freq as any)}
-                      className={`flex-1 px-3 py-2 text-xs font-bold uppercase tracking-wider rounded-lg border transition-all ${
-                        notificationFrequency === freq 
-                          ? 'bg-indigo-600 text-white border-indigo-600' 
-                          : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'
-                      }`}
-                    >
-                      {freq}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              
-              <div className="flex gap-3">
-                <button 
-                  onClick={() => setShowNotificationPrompt(false)}
-                  className="flex-1 px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button 
-                  onClick={() => handleSaveAlerts(true, notificationPreference, notificationFrequency)}
-                  className="flex-1 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-colors"
-                >
-                  Enable Alerts
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
       </AnimatePresence>
 
       <div className="grid grid-cols-1 gap-4">
-        {jobs.filter(job => 
-          (job.title || '').toLowerCase().includes(filterTitle.toLowerCase()) &&
-          (job.company || '').toLowerCase().includes(filterCompany.toLowerCase()) &&
-          (job.location || '').toLowerCase().includes(filterLocation.toLowerCase())
-        ).map(job => (
+        {jobs.filter(job => {
+          const matchesKeyword = !filterKeyword || (
+            (job.title || '').toLowerCase().includes(filterKeyword.toLowerCase()) || 
+            (job.company || '').toLowerCase().includes(filterKeyword.toLowerCase()) || 
+            (job.description || '').toLowerCase().includes(filterKeyword.toLowerCase()) ||
+            (job.location || '').toLowerCase().includes(filterKeyword.toLowerCase()) ||
+            (job.job_type || '').toLowerCase().includes(filterKeyword.toLowerCase()) ||
+            (job.experience_level || '').toLowerCase().includes(filterKeyword.toLowerCase())
+          );
+          const matchesTitle = (job.title || '').toLowerCase().includes(filterTitle.toLowerCase());
+          const matchesCompany = (job.company || '').toLowerCase().includes(filterCompany.toLowerCase());
+          const matchesLocation = (job.location || '').toLowerCase().includes(filterLocation.toLowerCase());
+          
+          if (!matchesKeyword || !matchesTitle || !matchesCompany || !matchesLocation) return false;
+
+          if (applySavedPreferences && preferences) {
+            const locPref = preferences.location.toLowerCase();
+            const typePref = preferences.jobType.toLowerCase();
+            const expPref = preferences.experienceLevel.toLowerCase();
+            
+            const jobLoc = (job.location || '').toLowerCase();
+            const jobType = (job.job_type || '').toLowerCase();
+            const jobExp = (job.experience_level || '').toLowerCase();
+            const jobTitle = (job.title || '').toLowerCase();
+            const jobDesc = (job.description || '').toLowerCase();
+
+            const locMatch = locPref === 'remote' ? jobLoc.includes('remote') : 
+                             locPref === 'on-site' ? !jobLoc.includes('remote') && !jobLoc.includes('hybrid') :
+                             locPref === 'hybrid' ? jobLoc.includes('hybrid') : true;
+            const typeMatch = jobType.includes(typePref) || jobTitle.includes(typePref) || jobDesc.includes(typePref);
+            const expMatch = jobExp.includes(expPref) || jobTitle.includes(expPref) || jobDesc.includes(expPref);
+            
+            return locMatch && typeMatch && expMatch;
+          }
+          return true;
+        }).map(job => (
           <div key={job.id} className="glass-card p-6 flex flex-col md:flex-row gap-6 items-start md:items-center hover:border-indigo-200 transition-all group">
             <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center shrink-0 group-hover:bg-indigo-50 transition-colors">
               <Briefcase size={32} className="text-slate-400 group-hover:text-indigo-600 transition-colors" />
@@ -2295,7 +3397,12 @@ function JobsView({ user, jobs, jobEvents, posts, onSearch, onEventsChange, onAd
                 </span>
               </div>
               <p className="text-slate-600 font-medium">{job.company}</p>
-              <p className="text-slate-400 text-sm mb-2">{job.location} • Posted {new Date(job.created_at).toLocaleDateString()}</p>
+              <p className="text-slate-400 text-sm mb-2">
+                {job.location} 
+                {job.job_type && ` • ${job.job_type}`}
+                {job.experience_level && ` • ${job.experience_level}`}
+                {' • '}Posted {new Date(job.created_at).toLocaleDateString()}
+              </p>
               <p className="text-sm text-slate-500 line-clamp-2">{job.description}</p>
               
               {jobAnalysisResults[job.id] && (
@@ -2427,156 +3534,507 @@ function JobsView({ user, jobs, jobEvents, posts, onSearch, onEventsChange, onAd
   );
 }
 
+function DraggableJobEvent({ event, onClick, onEdit, onDelete }: { event: JobEvent, onClick: () => void, onEdit: (e: JobEvent) => void, onDelete: (id: number) => void, key?: any }) {
+  const isVirtual = event.is_recurring_instance;
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: event.id,
+    data: { event },
+    disabled: isVirtual
+  });
+
+  const style = transform ? {
+    transform: CSS.Translate.toString(transform),
+  } : undefined;
+
+  return (
+    <div 
+      ref={setNodeRef}
+      style={style}
+      {...listeners}
+      {...attributes}
+      className={`p-2 mb-1 rounded-lg border text-[10px] font-bold truncate transition-all ${isVirtual ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'} ${
+        event.type === 'deadline' ? 'bg-red-50 text-red-700 border-red-100' : 
+        event.type === 'interview' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 
+        event.type === 'follow-up' ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-slate-50 text-slate-700 border-slate-100'
+      } ${isDragging ? 'opacity-50 scale-95 shadow-lg z-50' : 'hover:shadow-sm'}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!isVirtual) onClick();
+      }}
+    >
+      <div className="flex items-center justify-between gap-1">
+        <div className="flex items-center gap-1 truncate">
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+            event.type === 'deadline' ? 'bg-red-500' : 
+            event.type === 'interview' ? 'bg-emerald-500' : 
+            event.type === 'follow-up' ? 'bg-amber-500' : 'bg-slate-500'
+          }`} />
+          <span className="truncate">{event.title}</span>
+        </div>
+        {event.recurrence_pattern && event.recurrence_pattern !== 'none' && (
+          <Repeat size={10} className="text-slate-400 shrink-0" />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DroppableJobDay({ day, isCurrentMonth, isToday, events, onDayClick, onEdit, onDelete }: { 
+  day: Date, 
+  isCurrentMonth: boolean, 
+  isToday: boolean, 
+  events: JobEvent[], 
+  onDayClick: () => void,
+  onEdit: (e: JobEvent) => void,
+  onDelete: (id: number) => void,
+  key?: any
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `date-${format(day, 'yyyy-MM-dd')}`,
+  });
+
+  return (
+    <div 
+      ref={setNodeRef}
+      onClick={onDayClick}
+      className={`min-h-[100px] p-2 border-r border-b border-slate-100 transition-all cursor-pointer flex flex-col ${
+        !isCurrentMonth ? 'bg-slate-50/50' : 'bg-white'
+      } ${isOver ? 'bg-indigo-50/50 ring-2 ring-indigo-500/20 inset-0 z-10' : 'hover:bg-slate-50/30'}`}
+    >
+      <div className="flex justify-between items-start mb-1">
+        <span className={`text-xs font-bold ${
+          !isCurrentMonth ? 'text-slate-300' : 
+          isToday ? 'bg-indigo-600 text-white w-6 h-6 rounded-full flex items-center justify-center -mt-1 -ml-1' : 'text-slate-500'
+        }`}>
+          {format(day, 'd')}
+        </span>
+        {events.length > 0 && (
+          <span className="text-[10px] font-bold text-slate-400">{events.length}</span>
+        )}
+      </div>
+      <div className="flex-1 space-y-1 overflow-y-auto max-h-[80px] scrollbar-hide">
+        {events.map(event => (
+          <DraggableJobEvent 
+            key={event.id} 
+            event={event} 
+            onClick={onDayClick} 
+            onEdit={onEdit}
+            onDelete={onDelete}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function JobCalendarView({ jobEvents, jobs, onEventsChange }: { jobEvents: JobEvent[], jobs: Job[], onEventsChange: () => void }) {
+  const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
   const [showAddModal, setShowAddModal] = useState(false);
+  const [editingEventId, setEditingEventId] = useState<number | null>(null);
+  const [filterType, setFilterType] = useState<string>('all');
+  const [isExporting, setIsExporting] = useState(false);
+  const [activeId, setActiveId] = useState<number | null>(null);
   const [newEvent, setNewEvent] = useState({
     title: '',
     type: 'deadline' as const,
     date: format(new Date(), 'yyyy-MM-dd'),
     notes: '',
-    job_id: undefined as number | undefined
+    job_id: undefined as number | undefined,
+    recurrence_pattern: 'none' as 'none' | 'daily' | 'weekly' | 'monthly',
+    recurrence_end_date: undefined as Date | undefined
   });
 
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  const filteredEvents = React.useMemo(() => {
+    const baseEvents = filterType === 'all' 
+      ? jobEvents 
+      : jobEvents.filter(e => e.type === filterType);
+
+    const allInstances: JobEvent[] = [];
+    const viewStart = startOfWeek(startOfMonth(currentDate));
+    const viewEnd = endOfWeek(endOfMonth(currentDate));
+
+    baseEvents.forEach(event => {
+      allInstances.push(event);
+
+      if (event.recurrence_pattern && event.recurrence_pattern !== 'none') {
+        let nextDate = new Date(event.date);
+        const endDate = event.recurrence_end_date ? new Date(event.recurrence_end_date) : viewEnd;
+        const limit = endDate < viewEnd ? endDate : viewEnd;
+
+        // Safety limit to prevent infinite loops
+        let count = 0;
+        while (count < 100) {
+          if (event.recurrence_pattern === 'daily') nextDate = addDays(nextDate, 1);
+          else if (event.recurrence_pattern === 'weekly') nextDate = addWeeks(nextDate, 1);
+          else if (event.recurrence_pattern === 'monthly') nextDate = addMonths(nextDate, 1);
+          else break;
+
+          if (nextDate > limit) break;
+
+          allInstances.push({
+            ...event,
+            id: Number(`${event.id}${nextDate.getTime()}`), // Virtual ID
+            date: format(nextDate, 'yyyy-MM-dd'),
+            is_recurring_instance: true
+          });
+          count++;
+        }
+      }
+    });
+
+    return allInstances;
+  }, [jobEvents, filterType, currentDate]);
+
   const handleAddEvent = async () => {
-    await fetch('/api/job-events', {
-      method: 'POST',
+    const url = editingEventId ? `/api/job-events/${editingEventId}` : '/api/job-events';
+    const method = editingEventId ? 'PUT' : 'POST';
+    
+    await fetch(url, {
+      method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newEvent)
+      body: JSON.stringify({
+        ...newEvent,
+        recurrence_pattern: newEvent.recurrence_pattern === 'none' ? null : newEvent.recurrence_pattern,
+        recurrence_end_date: newEvent.recurrence_end_date ? format(newEvent.recurrence_end_date, 'yyyy-MM-dd') : null
+      })
     });
     setShowAddModal(false);
+    setEditingEventId(null);
     setNewEvent({
       title: '',
       type: 'deadline',
       date: format(new Date(), 'yyyy-MM-dd'),
       notes: '',
-      job_id: undefined
+      job_id: undefined,
+      recurrence_pattern: 'none',
+      recurrence_end_date: undefined
     });
     onEventsChange();
   };
 
+  const handleEditEvent = (event: JobEvent) => {
+    setEditingEventId(event.id);
+    setNewEvent({
+      title: event.title,
+      type: event.type as any,
+      date: format(new Date(event.date), 'yyyy-MM-dd'),
+      notes: event.notes || '',
+      job_id: event.job_id || undefined,
+      recurrence_pattern: (event.recurrence_pattern as any) || 'none',
+      recurrence_end_date: event.recurrence_end_date ? new Date(event.recurrence_end_date) : undefined
+    });
+    setShowAddModal(true);
+  };
+
   const handleDeleteEvent = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this event?')) return;
     await fetch(`/api/job-events/${id}`, { method: 'DELETE' });
     onEventsChange();
   };
 
-  const eventsOnSelectedDate = jobEvents.filter(e => format(new Date(e.date), 'yyyy-MM-dd') === format(selectedDate || new Date(), 'yyyy-MM-dd'));
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveId(event.active.id as number);
+  };
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    setActiveId(null);
+
+    if (over && active.id !== over.id) {
+      const eventId = active.id as number;
+      const targetDateStr = String(over.id).replace('date-', '');
+      const jobEvent = jobEvents.find(e => e.id === eventId);
+
+      if (jobEvent && format(new Date(jobEvent.date), 'yyyy-MM-dd') !== targetDateStr) {
+        try {
+          await fetch(`/api/job-events/${eventId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ...jobEvent,
+              date: targetDateStr
+            }),
+          });
+          onEventsChange();
+        } catch (err) {
+          console.error("Failed to reschedule job event:", err);
+        }
+      }
+    }
+  };
+
+  const handleExportCSV = () => {
+    if (jobEvents.length === 0) return;
+    setIsExporting(true);
+
+    const headers = ['Title', 'Type', 'Date', 'Notes', 'Related Job'];
+    const rows = jobEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()).map(e => {
+      const job = jobs.find(j => j.id === e.job_id);
+      return [
+        `"${e.title.replace(/"/g, '""')}"`,
+        e.type,
+        format(new Date(e.date), 'yyyy-MM-dd'),
+        `"${(e.notes || '').replace(/"/g, '""')}"`,
+        job ? `"${job.title} at ${job.company}"` : 'None'
+      ];
+    });
+
+    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `job_events_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    setTimeout(() => setIsExporting(false), 2000);
+  };
+
+  const monthStart = startOfMonth(currentDate);
+  const monthEnd = endOfMonth(monthStart);
+  const startDate = startOfWeek(monthStart);
+  const endDate = endOfWeek(monthEnd);
+  const calendarDays = eachDayOfInterval({ start: startDate, end: endDate });
+  const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  const eventsOnSelectedDate = filteredEvents.filter(e => format(new Date(e.date), 'yyyy-MM-dd') === format(selectedDate || new Date(), 'yyyy-MM-dd'));
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-      <div className="lg:col-span-2 glass-card p-6">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="font-display font-bold text-lg">Job Application Calendar</h3>
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <button onClick={() => setCurrentDate(subMonths(currentDate, 1))} className="p-1.5 hover:bg-slate-100 rounded-lg transition-colors">
+              <ChevronLeft size={20} />
+            </button>
+            <h3 className="font-display font-bold text-lg min-w-[140px] text-center">
+              {format(currentDate, 'MMMM yyyy')}
+            </h3>
+            <button onClick={() => setCurrentDate(addMonths(currentDate, 1))} className="p-1.5 hover:bg-slate-100 rounded-lg transition-colors">
+              <ChevronRight size={20} />
+            </button>
+          </div>
+          <button onClick={() => setCurrentDate(new Date())} className="text-xs font-bold text-indigo-600 hover:bg-indigo-50 px-3 py-1.5 rounded-lg transition-all">
+            Today
+          </button>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Filter size={14} className="text-slate-400" />
+            <select 
+              value={filterType}
+              onChange={(e) => setFilterType(e.target.value)}
+              className="text-xs font-bold border border-slate-200 rounded-lg px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500/20"
+            >
+              <option value="all">All Types</option>
+              <option value="interview">Interviews</option>
+              <option value="deadline">Deadlines</option>
+              <option value="follow-up">Follow-ups</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <button 
+            onClick={handleExportCSV}
+            disabled={isExporting}
+            className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-50 transition-all shadow-sm"
+          >
+            {isExporting ? <Check size={14} className="text-emerald-500" /> : <Download size={14} />}
+            {isExporting ? 'Exported' : 'Export CSV'}
+          </button>
           <button 
             onClick={() => setShowAddModal(true)}
-            className="btn-primary flex items-center gap-2 py-2 text-sm"
+            className="btn-primary flex items-center gap-2 py-1.5 text-xs"
           >
             <Plus size={16} /> Add Event
           </button>
         </div>
-        <div className="flex justify-center">
-          <DayPicker 
-            mode="single"
-            selected={selectedDate}
-            onSelect={setSelectedDate}
-            className="text-sm"
-            modifiers={{
-              hasEvent: jobEvents.map(e => new Date(e.date))
-            }}
-            modifiersClassNames={{
-              hasEvent: "font-bold text-indigo-600 underline"
-            }}
-          />
-        </div>
       </div>
 
-      <div className="space-y-6">
-        <div className="glass-card p-6">
-          <h4 className="font-display font-bold text-md mb-4 flex items-center gap-2">
-            <Clock size={18} className="text-indigo-600" />
-            Events for {selectedDate ? format(selectedDate, 'MMM d, yyyy') : 'Selected Date'}
-          </h4>
-          <div className="space-y-3">
-            {eventsOnSelectedDate.length > 0 ? eventsOnSelectedDate.map(event => (
-              <div key={event.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100 flex items-start justify-between group">
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className={`w-2 h-2 rounded-full ${
-                      event.type === 'deadline' ? 'bg-red-500' : 
-                      event.type === 'interview' ? 'bg-emerald-500' : 
-                      event.type === 'follow-up' ? 'bg-amber-500' : 'bg-slate-500'
-                    }`} />
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">{event.type}</span>
-                  </div>
-                  <p className="text-sm font-bold text-slate-900">{event.title}</p>
-                  {event.notes && <p className="text-xs text-slate-500 mt-1">{event.notes}</p>}
-                </div>
-                <button 
-                  onClick={() => handleDeleteEvent(event.id)}
-                  className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            )) : (
-              <p className="text-sm text-slate-500 italic">No events scheduled for this day.</p>
-            )}
-          </div>
-        </div>
-
-        <div className="glass-card p-6">
-          <h4 className="font-display font-bold text-md mb-4">Upcoming Deadlines</h4>
-          <div className="space-y-3">
-            {jobEvents.filter(e => e.type === 'deadline' && new Date(e.date) >= new Date()).slice(0, 3).map(event => (
-              <div key={event.id} className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-red-50 flex flex-col items-center justify-center shrink-0">
-                  <span className="text-[10px] font-bold text-red-600 uppercase">{format(new Date(event.date), 'MMM')}</span>
-                  <span className="text-sm font-bold text-red-700 leading-none">{format(new Date(event.date), 'd')}</span>
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-slate-900 truncate">{event.title}</p>
-                  <p className="text-xs text-slate-500">Deadline</p>
-                </div>
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+          <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50/50">
+            {weekDays.map(day => (
+              <div key={day} className="py-2 text-center text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                {day}
               </div>
             ))}
+          </div>
+          <DndContext 
+            sensors={sensors}
+            collisionDetection={closestCorners}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+          >
+            <div className="grid grid-cols-7 auto-rows-fr">
+              {calendarDays.map((day) => (
+                <DroppableJobDay 
+                  key={day.toISOString()} 
+                  day={day} 
+                  isCurrentMonth={isSameMonth(day, monthStart)}
+                  isToday={isToday(day)}
+                  events={filteredEvents.filter(e => isSameDay(new Date(e.date), day))}
+                  onDayClick={() => setSelectedDate(day)}
+                  onEdit={handleEditEvent}
+                  onDelete={handleDeleteEvent}
+                />
+              ))}
+            </div>
+            <DragOverlay>
+              {activeId ? (
+                <div className={`p-2 rounded-lg border text-[10px] font-bold shadow-xl opacity-90 ${
+                  jobEvents.find(e => e.id === activeId)?.type === 'deadline' ? 'bg-red-50 text-red-700 border-red-100' : 
+                  jobEvents.find(e => e.id === activeId)?.type === 'interview' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 
+                  jobEvents.find(e => e.id === activeId)?.type === 'follow-up' ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-slate-50 text-slate-700 border-slate-100'
+                }`}>
+                  {jobEvents.find(e => e.id === activeId)?.title}
+                </div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+        </div>
+
+        <div className="space-y-6">
+          <div className="glass-card p-6">
+            <h4 className="font-display font-bold text-md mb-4 flex items-center gap-2">
+              <Clock size={18} className="text-indigo-600" />
+              {selectedDate ? format(selectedDate, 'MMM d, yyyy') : 'Selected Date'}
+            </h4>
+            <div className="space-y-3">
+              {eventsOnSelectedDate.length > 0 ? eventsOnSelectedDate.map(event => (
+                <div key={event.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100 flex items-start justify-between group">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`w-2 h-2 rounded-full ${
+                        event.type === 'deadline' ? 'bg-red-500' : 
+                        event.type === 'interview' ? 'bg-emerald-500' : 
+                        event.type === 'follow-up' ? 'bg-amber-500' : 'bg-slate-500'
+                      }`} />
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{event.type}</span>
+                    </div>
+                    <p className="text-sm font-bold text-slate-900 truncate">{event.title}</p>
+                    {event.notes && <p className="text-xs text-slate-500 mt-1 line-clamp-2">{event.notes}</p>}
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0 ml-2">
+                    <button 
+                      onClick={() => handleEditEvent(event)}
+                      className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-white rounded-lg transition-all"
+                      title="Edit Event"
+                    >
+                      <Edit3 size={14} />
+                    </button>
+                    <button 
+                      onClick={() => handleDeleteEvent(event.id)}
+                      className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-white rounded-lg transition-all"
+                      title="Delete Event"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              )) : (
+                <div className="py-8 text-center bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+                  <CalendarDays size={24} className="mx-auto mb-2 text-slate-300" />
+                  <p className="text-xs text-slate-500 italic">No events scheduled.</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="glass-card p-6">
+            <h4 className="font-display font-bold text-md mb-4">Upcoming Deadlines</h4>
+            <div className="space-y-4">
+              {jobEvents.filter(e => e.type === 'deadline' && new Date(e.date) >= startOfDay(new Date())).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()).slice(0, 3).map(event => (
+                <div key={event.id} className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-red-50 flex flex-col items-center justify-center shrink-0 border border-red-100">
+                    <span className="text-[8px] font-bold text-red-600 uppercase">{format(new Date(event.date), 'MMM')}</span>
+                    <span className="text-sm font-bold text-red-700 leading-none">{format(new Date(event.date), 'd')}</span>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-slate-900 truncate">{event.title}</p>
+                    <p className="text-[10px] font-medium text-slate-500">
+                      {isToday(new Date(event.date)) ? 'Today' : `${Math.ceil((new Date(event.date).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24))} days left`}
+                    </p>
+                  </div>
+                </div>
+              ))}
+              {jobEvents.filter(e => e.type === 'deadline' && new Date(e.date) >= startOfDay(new Date())).length === 0 && (
+                <p className="text-xs text-slate-500 italic">No upcoming deadlines.</p>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
       <AnimatePresence>
         {showAddModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
             <motion.div 
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                setShowAddModal(false);
+                setEditingEventId(null);
+              }}
+              className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="relative bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl overflow-hidden"
             >
               <div className="flex items-center justify-between mb-6">
-                <h3 className="font-display font-bold text-xl">Add Job Event</h3>
-                <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center">
+                    <CalendarDays className="text-indigo-600" size={20} />
+                  </div>
+                  <h3 className="font-display font-bold text-xl">{editingEventId ? 'Edit Event' : 'Add Event'}</h3>
+                </div>
+                <button 
+                  onClick={() => {
+                    setShowAddModal(false);
+                    setEditingEventId(null);
+                  }} 
+                  className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center text-slate-400 transition-colors"
+                >
                   <X size={20} />
                 </button>
               </div>
               
-              <div className="space-y-4">
+              <div className="space-y-5">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Event Title</label>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Event Title</label>
                   <input 
                     type="text" 
                     value={newEvent.title}
                     onChange={e => setNewEvent({...newEvent, title: e.target.value})}
                     placeholder="e.g. Interview with Google"
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Type</label>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Type</label>
                     <select 
                       value={newEvent.type}
                       onChange={e => setNewEvent({...newEvent, type: e.target.value as any})}
-                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none"
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
                     >
                       <option value="deadline">Deadline</option>
                       <option value="interview">Interview</option>
@@ -2585,21 +4043,21 @@ function JobCalendarView({ jobEvents, jobs, onEventsChange }: { jobEvents: JobEv
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Date</label>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Date</label>
                     <input 
                       type="date" 
                       value={newEvent.date}
                       onChange={e => setNewEvent({...newEvent, date: e.target.value})}
-                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none"
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
                     />
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Related Job (Optional)</label>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Related Job (Optional)</label>
                   <select 
                     value={newEvent.job_id || ''}
                     onChange={e => setNewEvent({...newEvent, job_id: e.target.value ? parseInt(e.target.value) : undefined})}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none"
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
                   >
                     <option value="">None</option>
                     {jobs.filter(j => j.is_saved).map(job => (
@@ -2608,30 +4066,60 @@ function JobCalendarView({ jobEvents, jobs, onEventsChange }: { jobEvents: JobEv
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Notes</label>
                   <textarea 
                     value={newEvent.notes}
                     onChange={e => setNewEvent({...newEvent, notes: e.target.value})}
                     placeholder="Add any details..."
-                    className="w-full h-24 p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none resize-none"
+                    rows={3}
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all resize-none"
                   />
                 </div>
-              </div>
-              
-              <div className="flex gap-3 mt-8">
-                <button 
-                  onClick={() => setShowAddModal(false)}
-                  className="flex-1 px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button 
-                  onClick={handleAddEvent}
-                  disabled={!newEvent.title || !newEvent.date}
-                  className="flex-1 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-colors disabled:opacity-50"
-                >
-                  Save Event
-                </button>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Recurrence</label>
+                    <select 
+                      value={newEvent.recurrence_pattern}
+                      onChange={e => setNewEvent({...newEvent, recurrence_pattern: e.target.value as any})}
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                    >
+                      <option value="none">No Recurrence</option>
+                      <option value="daily">Daily</option>
+                      <option value="weekly">Weekly</option>
+                      <option value="monthly">Monthly</option>
+                    </select>
+                  </div>
+                  {newEvent.recurrence_pattern !== 'none' && (
+                    <div>
+                      <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">End Date</label>
+                      <input 
+                        type="date" 
+                        value={newEvent.recurrence_end_date ? format(newEvent.recurrence_end_date, 'yyyy-MM-dd') : ''}
+                        onChange={e => setNewEvent({...newEvent, recurrence_end_date: e.target.value ? new Date(e.target.value) : undefined})}
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                      />
+                    </div>
+                  )}
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <button 
+                    onClick={() => {
+                      setShowAddModal(false);
+                      setEditingEventId(null);
+                    }}
+                    className="flex-1 px-4 py-3 bg-slate-100 text-slate-600 rounded-xl font-bold text-sm hover:bg-slate-200 transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    onClick={handleAddEvent}
+                    disabled={!newEvent.title || !newEvent.date}
+                    className="flex-1 px-4 py-3 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 disabled:opacity-50 disabled:shadow-none"
+                  >
+                    {editingEventId ? 'Update Event' : 'Create Event'}
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>
@@ -2643,6 +4131,7 @@ function JobCalendarView({ jobEvents, jobs, onEventsChange }: { jobEvents: JobEv
 
 function ContentIdeasView({ user, onUseIdea }: { user: User | null, onUseIdea: (draft: string, platform: string) => void }) {
   const [industry, setIndustry] = useState(user?.industry || '');
+  const [targetRole, setTargetRole] = useState(user?.target_role || '');
   const [ideas, setIdeas] = useState<any[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [editingIdeaId, setEditingIdeaId] = useState<string | null>(null);
@@ -2652,7 +4141,7 @@ function ContentIdeasView({ user, onUseIdea }: { user: User | null, onUseIdea: (
     if (!user) return;
     setIsGenerating(true);
     try {
-      const suggestedIdeas = await suggestContentIdeas(user, industry);
+      const suggestedIdeas = await suggestContentIdeas(user, industry, targetRole);
       setIdeas(suggestedIdeas);
     } catch (err) {
       console.error("Error generating ideas:", err);
@@ -2695,9 +4184,19 @@ function ContentIdeasView({ user, onUseIdea }: { user: User | null, onUseIdea: (
                 className="bg-transparent text-sm font-medium outline-none w-full md:w-48"
               />
             </div>
+            <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-4 py-2 shadow-sm">
+              <Briefcase size={16} className="text-slate-400" />
+              <input 
+                type="text" 
+                placeholder="Target Role (e.g. Product Manager)" 
+                value={targetRole}
+                onChange={(e) => setTargetRole(e.target.value)}
+                className="bg-transparent text-sm font-medium outline-none w-full md:w-48"
+              />
+            </div>
             <button 
               onClick={handleGenerateIdeas}
-              disabled={isGenerating || !industry}
+              disabled={isGenerating || !industry || !targetRole}
               className="btn-primary flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {isGenerating ? <RefreshCw className="animate-spin" size={18} /> : <Zap size={18} />}
@@ -2789,10 +4288,915 @@ function ContentIdeasView({ user, onUseIdea }: { user: User | null, onUseIdea: (
   );
 }
 
+function LinkedinView({ posts, onPostCreated, channels, onChannelsChange }: { posts: Post[], onPostCreated: () => void, channels: Channel[], onChannelsChange: () => void }) {
+  const [dateRange, setDateRange] = useState('30d');
+  const [sortBy, setSortBy] = useState('date');
+  const [isConnectingChannel, setIsConnectingChannel] = useState(false);
+  const [newChannelName, setNewChannelName] = useState('');
+  const [newChannelHandle, setNewChannelHandle] = useState('');
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const linkedinChannels = channels.filter(c => c.platform === 'linkedin');
+
+  const handleConnectChannel = async () => {
+    if (!newChannelName || !newChannelHandle) return;
+    setIsConnecting(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          platform: 'linkedin',
+          name: newChannelName,
+          handle: newChannelHandle,
+          avatar_url: `https://ui-avatars.com/api/?name=${encodeURIComponent(newChannelName)}&background=0077B5&color=fff`
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to connect profile: ${response.statusText}`);
+      }
+
+      onChannelsChange();
+      setIsConnectingChannel(false);
+      setNewChannelName('');
+      setNewChannelHandle('');
+    } catch (error) {
+      console.error('Error connecting profile:', error);
+      setError(error instanceof Error ? error.message : 'Failed to connect profile. Please try again.');
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const filteredPosts = posts.filter(p => {
+    if (p.platform !== 'linkedin') return false;
+    
+    const postDate = new Date(p.created_at);
+    const now = new Date();
+    if (dateRange === '7d') return (now.getTime() - postDate.getTime()) <= 7 * 24 * 60 * 60 * 1000;
+    if (dateRange === '30d') return (now.getTime() - postDate.getTime()) <= 30 * 24 * 60 * 60 * 1000;
+    if (dateRange === '90d') return (now.getTime() - postDate.getTime()) <= 90 * 24 * 60 * 60 * 1000;
+    
+    return true;
+  });
+
+  const sortedPosts = [...filteredPosts].sort((a, b) => {
+    if (sortBy === 'impressions') return (b.impressions || 0) - (a.impressions || 0);
+    if (sortBy === 'likes') return (b.likes || 0) - (a.likes || 0);
+    if (sortBy === 'comments') return (b.comments || 0) - (a.comments || 0);
+    if (sortBy === 'shares') return (b.shares || 0) - (a.shares || 0);
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
+
+  const totalImpressions = filteredPosts.reduce((acc, p) => acc + (p.impressions || 0), 0);
+  const totalEngagement = filteredPosts.reduce((acc, p) => acc + (p.likes || 0) + (p.comments || 0) + (p.shares || 0), 0);
+  const avgEngagementRate = totalImpressions > 0 ? (totalEngagement / totalImpressions * 100).toFixed(1) : '0';
+
+  return (
+    <div className="space-y-8">
+      {/* Profiles Section */}
+      <div className="glass-card p-6 border border-blue-100 bg-white">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Linkedin size={20} className="text-blue-600" />
+            <h3 className="font-display font-bold text-lg text-slate-900">Connected Profiles</h3>
+          </div>
+          <button 
+            onClick={() => setIsConnectingChannel(!isConnectingChannel)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-sm font-bold hover:bg-blue-100 transition-colors"
+          >
+            <Plus size={16} />
+            Connect Profile
+          </button>
+        </div>
+
+        {isConnectingChannel && (
+          <div className="mb-6 p-4 bg-slate-50 rounded-xl border border-slate-200">
+            <h4 className="text-sm font-bold text-slate-900 mb-3">Connect New LinkedIn Profile</h4>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <input 
+                type="text" 
+                placeholder="Full Name" 
+                value={newChannelName}
+                onChange={(e) => setNewChannelName(e.target.value)}
+                className="flex-1 p-2 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+              <input 
+                type="text" 
+                placeholder="LinkedIn URL or Handle" 
+                value={newChannelHandle}
+                onChange={(e) => setNewChannelHandle(e.target.value)}
+                className="flex-1 p-2 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+              <button 
+                onClick={handleConnectChannel}
+                disabled={!newChannelName || !newChannelHandle || isConnecting}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isConnecting ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Connecting...
+                  </>
+                ) : 'Connect'}
+              </button>
+            </div>
+            {error && <p className="mt-2 text-xs text-rose-600 font-medium">{error}</p>}
+          </div>
+        )}
+
+        {linkedinChannels.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            {linkedinChannels.map(channel => (
+              <div key={channel.id} className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
+                <img src={channel.avatar_url} alt={channel.name} className="w-10 h-10 rounded-full object-cover" />
+                <div>
+                  <p className="text-sm font-bold text-slate-900">{channel.name}</p>
+                  <p className="text-xs text-slate-500">{channel.handle}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500 italic">No LinkedIn profiles connected yet.</p>
+        )}
+      </div>
+
+      {/* Stats Summary */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="glass-card p-6 border-l-4 border-l-blue-600">
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Total Impressions</p>
+          <h3 className="text-2xl font-display font-bold text-slate-900">{totalImpressions.toLocaleString()}</h3>
+        </div>
+        <div className="glass-card p-6 border-l-4 border-l-blue-600">
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Total Engagement</p>
+          <h3 className="text-2xl font-display font-bold text-slate-900">{totalEngagement.toLocaleString()}</h3>
+        </div>
+        <div className="glass-card p-6 border-l-4 border-l-blue-600">
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Avg. Engagement Rate</p>
+          <h3 className="text-2xl font-display font-bold text-slate-900">{avgEngagementRate}%</h3>
+        </div>
+      </div>
+
+      {/* Filters and Posts */}
+      <div className="space-y-4">
+        <div className="flex flex-col sm:flex-row items-center gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <Calendar size={16} className="text-slate-400" />
+            <select 
+              value={dateRange} 
+              onChange={(e) => setDateRange(e.target.value)}
+              className="bg-transparent text-sm font-medium text-slate-700 outline-none cursor-pointer flex-1"
+            >
+              <option value="7d">Last 7 Days</option>
+              <option value="30d">Last 30 Days</option>
+              <option value="90d">Last 90 Days</option>
+              <option value="all">All Time</option>
+            </select>
+          </div>
+          <div className="hidden sm:block h-4 w-px bg-slate-200"></div>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <SlidersHorizontal size={16} className="text-slate-400" />
+            <select 
+              value={sortBy} 
+              onChange={(e) => setSortBy(e.target.value)}
+              className="bg-transparent text-sm font-medium text-slate-700 outline-none cursor-pointer flex-1"
+            >
+              <option value="date">Sort by Date</option>
+              <option value="impressions">Sort by Impressions</option>
+              <option value="likes">Sort by Likes</option>
+              <option value="comments">Sort by Comments</option>
+              <option value="shares">Sort by Shares</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4">
+          {sortedPosts.map(post => (
+            <div key={post.id} className="glass-card p-6 hover:border-blue-200 transition-all group">
+              <div className="flex justify-between items-start mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center text-blue-600">
+                    <Linkedin size={20} />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-slate-900">LinkedIn Post</p>
+                    <p className="text-xs text-slate-400">{new Date(post.created_at).toLocaleDateString()}</p>
+                  </div>
+                </div>
+                <div className="flex gap-4 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  <span className="flex items-center gap-1"><BarChart2 size={12} /> {post.impressions || 0}</span>
+                  <span className="flex items-center gap-1"><Heart size={12} /> {post.likes || 0}</span>
+                  <span className="flex items-center gap-1"><Share2 size={12} /> {post.shares || 0}</span>
+                </div>
+              </div>
+              <p className="text-sm text-slate-700 whitespace-pre-wrap">{post.content}</p>
+              {post.image_url && (
+                <div className="mt-4 rounded-xl overflow-hidden border border-slate-100">
+                  <img src={post.image_url} alt="Post content" className="w-full h-auto object-cover" referrerPolicy="no-referrer" />
+                </div>
+              )}
+            </div>
+          ))}
+          {sortedPosts.length === 0 && (
+            <div className="py-20 text-center bg-white rounded-2xl border border-dashed border-slate-200">
+              <Linkedin size={48} className="mx-auto mb-4 text-slate-200" />
+              <p className="text-slate-500">No LinkedIn posts found for this period.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TranscriptionSection({ video, onTranscriptionGenerated }: { video: Post, onTranscriptionGenerated: () => void }) {
+  const [transcription, setTranscription] = useState(video.transcription);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const handleGenerate = async () => {
+    setIsGenerating(true);
+    try {
+      const response = await fetch('/api/transcribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ postId: video.id, content: video.content })
+      });
+      const data = await response.json();
+      setTranscription(data.transcription);
+      onTranscriptionGenerated();
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  return (
+    <div className="mt-4 border-t border-slate-100 pt-4">
+      <button 
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="text-xs font-bold text-rose-600 hover:underline flex items-center gap-1"
+      >
+        {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        {transcription ? 'View Transcription' : 'Generate Transcription'}
+      </button>
+      {isExpanded && (
+        <div className="mt-2 p-3 bg-slate-50 rounded-lg text-xs text-slate-600 leading-relaxed">
+          {transcription ? (
+            <p className="whitespace-pre-wrap">{transcription}</p>
+          ) : (
+            <button 
+              onClick={handleGenerate}
+              disabled={isGenerating}
+              className="px-3 py-1.5 bg-rose-600 text-white rounded-lg text-xs font-bold hover:bg-rose-700 disabled:opacity-50"
+            >
+              {isGenerating ? 'Generating...' : 'Generate Transcription'}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function YoutubeView({ posts, onPostCreated, channels, onChannelsChange }: { posts: Post[], onPostCreated: () => void, channels: Channel[], onChannelsChange: () => void }) {
+  const [dateRange, setDateRange] = useState('30d');
+  const [shortsSortBy, setShortsSortBy] = useState('views');
+  const [videosSortBy, setVideosSortBy] = useState('date');
+  const [selectedVideo, setSelectedVideo] = useState<Post | null>(null);
+  const [isConnectingChannel, setIsConnectingChannel] = useState(false);
+  const [newChannelName, setNewChannelName] = useState('');
+  const [newChannelHandle, setNewChannelHandle] = useState('');
+
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const youtubeChannels = channels.filter(c => c.platform === 'youtube');
+
+  const handleConnectChannel = async () => {
+    if (!newChannelName || !newChannelHandle) return;
+    setIsConnecting(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          platform: 'youtube',
+          name: newChannelName,
+          handle: newChannelHandle,
+          avatar_url: `https://ui-avatars.com/api/?name=${encodeURIComponent(newChannelName)}&background=random`
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to connect channel: ${response.statusText}`);
+      }
+
+      onChannelsChange();
+      setIsConnectingChannel(false);
+      setNewChannelName('');
+      setNewChannelHandle('');
+    } catch (error) {
+      console.error('Error connecting channel:', error);
+      setError(error instanceof Error ? error.message : 'Failed to connect channel. Please try again.');
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const filteredYoutubePosts = posts.filter(p => {
+    if (p.platform !== 'youtube' && p.platform !== 'youtube-shorts') return false;
+    
+    const postDate = new Date(p.created_at);
+    const now = new Date();
+    if (dateRange === '7d') return (now.getTime() - postDate.getTime()) <= 7 * 24 * 60 * 60 * 1000;
+    if (dateRange === '30d') return (now.getTime() - postDate.getTime()) <= 30 * 24 * 60 * 60 * 1000;
+    if (dateRange === '90d') return (now.getTime() - postDate.getTime()) <= 90 * 24 * 60 * 60 * 1000;
+    
+    return true;
+  });
+
+  const videos = filteredYoutubePosts.filter(p => p.platform === 'youtube').sort((a, b) => {
+    if (videosSortBy === 'views') return (b.reach || 0) - (a.reach || 0);
+    if (videosSortBy === 'likes') return (b.likes || 0) - (a.likes || 0);
+    if (videosSortBy === 'comments') return (b.comments || 0) - (a.comments || 0);
+    if (videosSortBy === 'shares') return (b.shares || 0) - (a.shares || 0);
+    if (videosSortBy === 'retention') return (b.audience_retention || 0) - (a.audience_retention || 0);
+    if (videosSortBy === 'ctr') return (b.click_through_rate || 0) - (a.click_through_rate || 0);
+    if (videosSortBy === 'watch_time') return (b.watch_time || 0) - (a.watch_time || 0);
+    if (videosSortBy === 'engagement') {
+      const rateA = (a.reach || 0) > 0 ? ((a.likes || 0) + (a.comments || 0) + (a.shares || 0)) / (a.reach || 0) : 0;
+      const rateB = (b.reach || 0) > 0 ? ((b.likes || 0) + (b.comments || 0) + (b.shares || 0)) / (b.reach || 0) : 0;
+      return rateB - rateA;
+    }
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
+
+  const shorts = filteredYoutubePosts.filter(p => p.platform === 'youtube-shorts').sort((a, b) => {
+    if (shortsSortBy === 'views') return (b.reach || 0) - (a.reach || 0);
+    if (shortsSortBy === 'likes') return (b.likes || 0) - (a.likes || 0);
+    if (shortsSortBy === 'comments') return (b.comments || 0) - (a.comments || 0);
+    if (shortsSortBy === 'shares') return (b.shares || 0) - (a.shares || 0);
+    if (shortsSortBy === 'retention') return (b.audience_retention || 0) - (a.audience_retention || 0);
+    if (shortsSortBy === 'ctr') return (b.click_through_rate || 0) - (a.click_through_rate || 0);
+    if (shortsSortBy === 'watch_time') return (b.watch_time || 0) - (a.watch_time || 0);
+    if (shortsSortBy === 'engagement') {
+      const rateA = (a.reach || 0) > 0 ? ((a.likes || 0) + (a.comments || 0) + (a.shares || 0)) / (a.reach || 0) : 0;
+      const rateB = (b.reach || 0) > 0 ? ((b.likes || 0) + (b.comments || 0) + (b.shares || 0)) / (b.reach || 0) : 0;
+      return rateB - rateA;
+    }
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
+
+  const totalViews = filteredYoutubePosts.reduce((acc, p) => acc + (p.reach || 0), 0);
+  const totalEngagement = filteredYoutubePosts.reduce((acc, p) => acc + (p.likes || 0) + (p.comments || 0) + (p.shares || 0), 0);
+  const avgEngagementRate = filteredYoutubePosts.length > 0 ? (totalEngagement / totalViews * 100).toFixed(1) : '0';
+
+  const shortsTotalViews = shorts.reduce((acc, p) => acc + (p.reach || 0), 0);
+  const shortsTotalEngagement = shorts.reduce((acc, p) => acc + (p.likes || 0) + (p.comments || 0) + (p.shares || 0), 0);
+  const shortsAvgEngagementRate = shortsTotalViews > 0 ? ((shortsTotalEngagement / shortsTotalViews) * 100).toFixed(1) : '0';
+  const shortsAvgRetention = shorts.length > 0 ? (shorts.reduce((acc, p) => acc + (p.audience_retention || 0), 0) / shorts.length * 100).toFixed(1) : '0';
+  const shortsAvgCtr = shorts.length > 0 ? (shorts.reduce((acc, p) => acc + (p.click_through_rate || 0), 0) / shorts.length * 100).toFixed(1) : '0';
+
+  const handleExportCSV = () => {
+    const headers = ['Platform', 'Date', 'Views', 'Likes', 'Comments', 'Shares', 'Engagement Rate (%)', 'Watch Time (min)', 'Audience Retention (%)', 'CTR (%)'];
+    const rows = filteredYoutubePosts.map(p => {
+      const views = p.reach || 0;
+      const engagement = (p.likes || 0) + (p.comments || 0) + (p.shares || 0);
+      const rate = views > 0 ? ((engagement / views) * 100).toFixed(2) : '0.00';
+      return [
+        p.platform,
+        new Date(p.created_at).toLocaleDateString(),
+        views,
+        p.likes || 0,
+        p.comments || 0,
+        p.shares || 0,
+        rate,
+        p.watch_time || 0,
+        ((p.audience_retention || 0) * 100).toFixed(1),
+        ((p.click_through_rate || 0) * 100).toFixed(1)
+      ];
+    });
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(r => r.join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `youtube_analytics_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <div className="space-y-8">
+      {/* Channels Section */}
+      <div className="glass-card p-6 border border-rose-100 bg-white">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Youtube size={20} className="text-rose-600" />
+            <h3 className="font-display font-bold text-lg text-slate-900">Connected Channels</h3>
+          </div>
+          <button 
+            onClick={() => setIsConnectingChannel(!isConnectingChannel)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 text-rose-600 rounded-lg text-sm font-bold hover:bg-rose-100 transition-colors"
+          >
+            <Plus size={16} />
+            Connect Channel
+          </button>
+        </div>
+
+        {isConnectingChannel && (
+          <div className="mb-6 p-4 bg-slate-50 rounded-xl border border-slate-200">
+            <h4 className="text-sm font-bold text-slate-900 mb-3">Connect New YouTube Channel</h4>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <input 
+                type="text" 
+                placeholder="Channel Name (e.g. Tech Reviews)" 
+                value={newChannelName}
+                onChange={(e) => setNewChannelName(e.target.value)}
+                className="flex-1 p-2 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-rose-500/20"
+              />
+              <input 
+                type="text" 
+                placeholder="Channel Handle (e.g. @techreviews)" 
+                value={newChannelHandle}
+                onChange={(e) => setNewChannelHandle(e.target.value)}
+                className="flex-1 p-2 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-rose-500/20"
+              />
+              <button 
+                onClick={handleConnectChannel}
+                disabled={!newChannelName || !newChannelHandle || isConnecting}
+                className="px-4 py-2 bg-rose-600 text-white rounded-lg text-sm font-bold hover:bg-rose-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isConnecting ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Connecting...
+                  </>
+                ) : 'Connect'}
+              </button>
+            </div>
+            {error && <p className="mt-2 text-xs text-rose-600 font-medium">{error}</p>}
+          </div>
+        )}
+
+        {youtubeChannels.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            {youtubeChannels.map(channel => (
+              <div key={channel.id} className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
+                <img src={channel.avatar_url} alt={channel.name} className="w-10 h-10 rounded-full object-cover" />
+                <div>
+                  <p className="text-sm font-bold text-slate-900">{channel.name}</p>
+                  <p className="text-xs text-slate-500">{channel.handle}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500 italic">No YouTube channels connected yet.</p>
+        )}
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row items-center gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <Calendar size={16} className="text-slate-400" />
+          <select 
+            value={dateRange} 
+            onChange={(e) => setDateRange(e.target.value)}
+            className="bg-transparent text-sm font-medium text-slate-700 outline-none cursor-pointer flex-1"
+          >
+            <option value="7d">Last 7 Days</option>
+            <option value="30d">Last 30 Days</option>
+            <option value="90d">Last 90 Days</option>
+            <option value="all">All Time</option>
+          </select>
+        </div>
+        <div className="hidden sm:block h-4 w-px bg-slate-200"></div>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <SlidersHorizontal size={16} className="text-slate-400" />
+          <select 
+            value={videosSortBy} 
+            onChange={(e) => setVideosSortBy(e.target.value)}
+            className="bg-transparent text-sm font-medium text-slate-700 outline-none cursor-pointer flex-1"
+          >
+            <option value="date">Sort Videos by Date</option>
+            <option value="views">Sort Videos by Views</option>
+            <option value="likes">Sort Videos by Likes</option>
+            <option value="comments">Sort Videos by Comments</option>
+            <option value="shares">Sort Videos by Shares</option>
+            <option value="retention">Sort Videos by Retention</option>
+            <option value="ctr">Sort Videos by CTR</option>
+            <option value="watch_time">Sort Videos by Watch Time</option>
+            <option value="engagement">Sort Videos by Engagement Rate</option>
+          </select>
+        </div>
+        <div className="hidden sm:block h-4 w-px bg-slate-200"></div>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <SlidersHorizontal size={16} className="text-slate-400" />
+          <select 
+            value={shortsSortBy} 
+            onChange={(e) => setShortsSortBy(e.target.value)}
+            className="bg-transparent text-sm font-medium text-slate-700 outline-none cursor-pointer flex-1"
+          >
+            <option value="date">Sort Shorts by Date</option>
+            <option value="views">Sort Shorts by Views</option>
+            <option value="likes">Sort Shorts by Likes</option>
+            <option value="comments">Sort Shorts by Comments</option>
+            <option value="shares">Sort Shorts by Shares</option>
+            <option value="retention">Sort Shorts by Retention</option>
+            <option value="ctr">Sort Shorts by CTR</option>
+            <option value="watch_time">Sort Shorts by Watch Time</option>
+            <option value="engagement">Sort Shorts by Engagement Rate</option>
+          </select>
+        </div>
+        <div className="sm:ml-auto">
+          <button 
+            onClick={handleExportCSV}
+            className="flex items-center gap-2 px-4 py-2 bg-rose-600 text-white rounded-lg text-sm font-bold hover:bg-rose-700 transition-colors shadow-sm"
+          >
+            <Download size={16} />
+            Export CSV
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="glass-card p-6 border-l-4 border-l-rose-600">
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Total Views (All)</p>
+          <h3 className="text-2xl font-display font-bold text-slate-900">{totalViews.toLocaleString()}</h3>
+          <p className="text-xs text-emerald-600 font-medium mt-2 flex items-center gap-1">
+            <ArrowRight size={12} className="-rotate-45" /> +12.4% this month
+          </p>
+        </div>
+        <div className="glass-card p-6 border-l-4 border-l-rose-600">
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Total Engagement (All)</p>
+          <h3 className="text-2xl font-display font-bold text-slate-900">{totalEngagement.toLocaleString()}</h3>
+          <p className="text-xs text-emerald-600 font-medium mt-2 flex items-center gap-1">
+            <ArrowRight size={12} className="-rotate-45" /> +8.2% this month
+          </p>
+        </div>
+        <div className="glass-card p-6 border-l-4 border-l-rose-600">
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Avg. Engagement Rate (All)</p>
+          <h3 className="text-2xl font-display font-bold text-slate-900">{avgEngagementRate}%</h3>
+          <p className="text-xs text-emerald-600 font-medium mt-2 flex items-center gap-1">
+            <ArrowRight size={12} className="-rotate-45" /> +0.5% this month
+          </p>
+        </div>
+      </div>
+
+      <div className="glass-card p-6 border border-rose-100 bg-rose-50/30">
+        <div className="flex items-center gap-2 mb-4">
+          <Video size={18} className="text-rose-600" />
+          <h3 className="font-display font-bold text-lg text-slate-900">Shorts Performance</h3>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
+          <div>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Views</p>
+            <p className="text-lg font-bold text-slate-900">{shortsTotalViews.toLocaleString()}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Likes</p>
+            <p className="text-lg font-bold text-slate-900">{shorts.reduce((acc, p) => acc + (p.likes || 0), 0).toLocaleString()}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Comments</p>
+            <p className="text-lg font-bold text-slate-900">{shorts.reduce((acc, p) => acc + (p.comments || 0), 0).toLocaleString()}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Shares</p>
+            <p className="text-lg font-bold text-slate-900">{shorts.reduce((acc, p) => acc + (p.shares || 0), 0).toLocaleString()}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Eng. Rate</p>
+            <p className="text-lg font-bold text-slate-900">{shortsAvgEngagementRate}%</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Avg Retention</p>
+            <p className="text-lg font-bold text-slate-900">{shortsAvgRetention}%</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Avg CTR</p>
+            <p className="text-lg font-bold text-slate-900">{shortsAvgCtr}%</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="glass-card p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="font-display font-bold text-lg">Recent Videos</h3>
+            <button className="text-rose-600 text-sm font-bold hover:underline">View Studio</button>
+          </div>
+          <div className="space-y-4">
+            {videos.slice(0, 8).map(video => (
+              <div 
+                key={video.id} 
+                onClick={() => setSelectedVideo(video)}
+                className="flex gap-4 p-3 rounded-xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-100 cursor-pointer group"
+              >
+                <div className="w-32 h-20 bg-slate-100 rounded-lg overflow-hidden shrink-0 relative">
+                  {video.thumbnail_url ? (
+                    <img src={video.thumbnail_url} alt={video.content} className="w-full h-full object-cover" />
+                  ) : video.video_url ? (
+                    <video src={video.video_url} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-slate-200">
+                      <Video size={24} className="text-slate-400" />
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <BarChart2 size={20} className="text-white" />
+                  </div>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-sm font-bold text-slate-900 truncate mb-1 group-hover:text-rose-600 transition-colors">{video.content.split('\n')[0].replace('TITLE: ', '')}</h4>
+                  <p className="text-xs text-slate-500 line-clamp-2 mb-2">{video.content.split('\n')[1]?.replace('DESCRIPTION: ', '')}</p>
+                  
+                  <div className="grid grid-cols-3 gap-2 mb-2 p-2 bg-slate-50 rounded-lg border border-slate-100">
+                    <div className="text-center">
+                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Watch Time</p>
+                      <p className="text-[10px] font-bold text-slate-700">{video.watch_time || 0}m</p>
+                    </div>
+                    <div className="text-center border-x border-slate-200">
+                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Retention</p>
+                      <p className="text-[10px] font-bold text-slate-700">{((video.audience_retention || 0) * 100).toFixed(1)}%</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">CTR</p>
+                      <p className="text-[10px] font-bold text-slate-700">{((video.click_through_rate || 0) * 100).toFixed(1)}%</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    <span className="flex items-center gap-1" title="Views"><BarChart2 size={10} /> {video.reach || 0}</span>
+                    <span className="flex items-center gap-1" title="Likes"><Heart size={10} /> {video.likes || 0}</span>
+                    <span className="flex items-center gap-1" title="Comments"><FileText size={10} /> {video.comments || 0}</span>
+                    <span className="flex items-center gap-1" title="Shares"><Share2 size={10} /> {video.shares || 0}</span>
+                    <span>{new Date(video.created_at).toLocaleDateString()}</span>
+                  </div>
+                  <TranscriptionSection video={video} onTranscriptionGenerated={onPostCreated} />
+                </div>
+              </div>
+            ))}
+            {videos.length === 0 && <p className="text-slate-500 text-sm italic text-center py-8">No videos created yet.</p>}
+          </div>
+        </div>
+
+        <div className="glass-card p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="font-display font-bold text-lg">YouTube Shorts</h3>
+            <button className="text-rose-600 text-sm font-bold hover:underline">View Studio</button>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            {shorts.slice(0, 8).map(short => (
+              <div 
+                key={short.id} 
+                onClick={() => setSelectedVideo(short)}
+                className="space-y-2 group cursor-pointer"
+              >
+                <div className="aspect-[9/16] bg-slate-100 rounded-xl overflow-hidden relative">
+                  {short.thumbnail_url ? (
+                    <img src={short.thumbnail_url} alt={short.content} className="w-full h-full object-cover" />
+                  ) : short.video_url ? (
+                    <video src={short.video_url} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-slate-200">
+                      <Video size={24} className="text-slate-400" />
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <div className="bg-white/90 backdrop-blur-sm p-2 rounded-full shadow-lg">
+                      <BarChart2 size={20} className="text-rose-600" />
+                    </div>
+                  </div>
+                  <div className="absolute bottom-2 left-2 right-2 bg-black/60 backdrop-blur-md p-2 rounded-lg">
+                    <p className="text-[10px] font-bold text-white truncate">{short.content.split('\n')[0].replace('TITLE: ', '')}</p>
+                    <div className="flex items-center justify-between mt-1 text-[8px] font-bold text-white/80 uppercase tracking-tighter">
+                      <span>{short.watch_time || 0}m</span>
+                      <span>{((short.audience_retention || 0) * 100).toFixed(0)}% Ret.</span>
+                      <span>{((short.click_through_rate || 0) * 100).toFixed(1)}% CTR</span>
+                    </div>
+                  </div>
+                </div>
+                <TranscriptionSection video={short} onTranscriptionGenerated={onPostCreated} />
+                <div className="flex items-center justify-between px-1">
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{short.reach || 0} views</span>
+                    <span className="text-[8px] font-medium text-slate-400">{new Date(short.created_at).toLocaleDateString()}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-0.5" title="Likes">
+                      <Heart size={10} className="text-rose-500" />
+                      <span className="text-[10px] font-bold text-slate-700">{short.likes || 0}</span>
+                    </div>
+                    <div className="flex items-center gap-0.5" title="Comments">
+                      <FileText size={10} className="text-slate-400" />
+                      <span className="text-[10px] font-bold text-slate-700">{short.comments || 0}</span>
+                    </div>
+                    <div className="flex items-center gap-0.5" title="Shares">
+                      <Share2 size={10} className="text-slate-400" />
+                      <span className="text-[10px] font-bold text-slate-700">{short.shares || 0}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {shorts.length === 0 && <div className="col-span-2 text-slate-500 text-sm italic text-center py-8">No shorts created yet.</div>}
+          </div>
+        </div>
+      </div>
+
+      {/* Detailed Analytics Modal */}
+      <AnimatePresence>
+        {selectedVideo && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedVideo(null)}
+              className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-2xl bg-white rounded-3xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-rose-100 rounded-xl flex items-center justify-center">
+                    <BarChart2 className="text-rose-600" size={20} />
+                  </div>
+                  <div>
+                    <h3 className="font-display font-bold text-lg text-slate-900">Video Performance</h3>
+                    <p className="text-xs text-slate-500 font-medium">Detailed analytics for your content</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setSelectedVideo(null)}
+                  className="w-10 h-10 rounded-full hover:bg-slate-200 transition-colors flex items-center justify-center text-slate-400 hover:text-slate-600"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="p-8">
+                <div className="flex flex-col md:flex-row gap-8 mb-8">
+                  <div className="w-full md:w-48 aspect-video md:aspect-[4/3] bg-slate-100 rounded-2xl overflow-hidden shrink-0 shadow-inner">
+                    {selectedVideo.thumbnail_url ? (
+                      <img src={selectedVideo.thumbnail_url} alt="Thumbnail" className="w-full h-full object-cover" />
+                    ) : selectedVideo.video_url ? (
+                      <video src={selectedVideo.video_url} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center bg-slate-200">
+                        <Video size={32} className="text-slate-400" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-xl font-display font-bold text-slate-900 mb-2">
+                      {selectedVideo.content.split('\n')[0].replace('TITLE: ', '')}
+                    </h4>
+                    <p className="text-sm text-slate-500 line-clamp-3 mb-4 leading-relaxed">
+                      {selectedVideo.content.split('\n')[1]?.replace('DESCRIPTION: ', '')}
+                    </p>
+                    <div className="flex flex-wrap gap-4">
+                      <div className="px-3 py-1 bg-slate-100 rounded-full text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                        {selectedVideo.platform.replace('-', ' ')}
+                      </div>
+                      <div className="px-3 py-1 bg-slate-100 rounded-full text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                        {new Date(selectedVideo.created_at).toLocaleDateString(undefined, { dateStyle: 'long' })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Views</p>
+                    <p className="text-xl font-display font-bold text-slate-900">{(selectedVideo.reach || 0).toLocaleString()}</p>
+                  </div>
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Likes</p>
+                    <p className="text-xl font-display font-bold text-slate-900">{(selectedVideo.likes || 0).toLocaleString()}</p>
+                  </div>
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Comments</p>
+                    <p className="text-xl font-display font-bold text-slate-900">{(selectedVideo.comments || 0).toLocaleString()}</p>
+                  </div>
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Shares</p>
+                    <p className="text-xl font-display font-bold text-slate-900">{(selectedVideo.shares || 0).toLocaleString()}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-6">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Clock size={14} className="text-rose-500" />
+                        <span className="text-sm font-bold text-slate-700">Watch Time</span>
+                      </div>
+                      <span className="text-sm font-bold text-slate-900">{selectedVideo.watch_time || 0} minutes</span>
+                    </div>
+                    <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: '65%' }}
+                        className="h-full bg-rose-500 rounded-full"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Users size={14} className="text-indigo-500" />
+                        <span className="text-sm font-bold text-slate-700">Audience Retention</span>
+                      </div>
+                      <span className="text-sm font-bold text-slate-900">{((selectedVideo.audience_retention || 0) * 100).toFixed(1)}%</span>
+                    </div>
+                    <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(selectedVideo.audience_retention || 0) * 100}%` }}
+                        className="h-full bg-indigo-500 rounded-full"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <ArrowRight size={14} className="text-emerald-500 -rotate-45" />
+                        <span className="text-sm font-bold text-slate-700">Click-Through Rate (CTR)</span>
+                      </div>
+                      <span className="text-sm font-bold text-slate-900">{((selectedVideo.click_through_rate || 0) * 100).toFixed(1)}%</span>
+                    </div>
+                    <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(selectedVideo.click_through_rate || 0) * 10}%` }} // Scaled for visibility
+                        className="h-full bg-emerald-500 rounded-full"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end">
+                <button 
+                  onClick={() => setSelectedVideo(null)}
+                  className="px-6 py-2 bg-slate-900 text-white rounded-xl font-bold text-sm hover:bg-slate-800 transition-colors"
+                >
+                  Close Analytics
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[], followerGrowth: any[], jobApplications: any[] }) {
   const [dateRange, setDateRange] = useState('7d');
   const [platform, setPlatform] = useState('all');
   const [postType, setPostType] = useState('all');
+
+  const clearFilters = () => {
+    setPlatform('all');
+    setPostType('all');
+    setDateRange('7d');
+  };
+
+  const isFiltered = platform !== 'all' || postType !== 'all' || dateRange !== '7d';
+
+  // Filter follower growth based on date range
+  const filteredFollowerGrowth = followerGrowth.filter(fg => {
+    const fgDate = new Date(fg.date);
+    const now = new Date();
+    if (dateRange === '7d') return (now.getTime() - fgDate.getTime()) <= 7 * 24 * 60 * 60 * 1000;
+    if (dateRange === '30d') return (now.getTime() - fgDate.getTime()) <= 30 * 24 * 60 * 60 * 1000;
+    if (dateRange === '90d') return (now.getTime() - fgDate.getTime()) <= 90 * 24 * 60 * 60 * 1000;
+    return true;
+  });
 
   // Filter posts based on selection
   const filteredPosts = posts.filter(post => {
@@ -2822,7 +5226,7 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
   const avgEngagementRate = totalReach > 0 ? ((totalEngagement / totalReach) * 100).toFixed(1) : '0.0';
 
   // Format data for charts
-  const platformFollowerData = followerGrowth
+  const platformFollowerData = filteredFollowerGrowth
     .reduce((acc: any[], curr) => {
       const existing = acc.find(a => a.name === curr.date);
       const platformMap: { [key: string]: string } = {
@@ -2839,10 +5243,9 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
       }
       return acc;
     }, [])
-    .sort((a, b) => new Date(a.name).getTime() - new Date(b.name).getTime())
-    .slice(-7);
+    .sort((a, b) => new Date(a.name).getTime() - new Date(b.name).getTime());
 
-  const audienceData = followerGrowth
+  const audienceData = filteredFollowerGrowth
     .filter(fg => platform === 'all' || fg.platform.toLowerCase() === platform)
     .reduce((acc: any[], curr) => {
       const existing = acc.find(a => a.name === curr.date);
@@ -2853,7 +5256,12 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
       }
       return acc;
     }, [])
-    .slice(-7); // Last 7 entries for simplicity in trend
+    .sort((a, b) => new Date(a.name).getTime() - new Date(b.name).getTime());
+
+  const linkedInGrowthData = filteredFollowerGrowth
+    .filter(fg => fg.platform.toLowerCase() === 'linkedin')
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    .map(fg => ({ name: fg.date, followers: fg.count }));
 
   const platformReachData = ['linkedin', 'twitter', 'instagram', 'youtube'].map(p => ({
     platform: p.charAt(0).toUpperCase() + p.slice(1),
@@ -2878,6 +5286,33 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
     { name: 'Standard Posts', value: posts.filter(p => !p.content.includes('#article')).length, color: '#10b981' },
     { name: 'Videos', value: posts.filter(p => p.video_url).length, color: '#ef4444' },
   ];
+
+  const engagementRateTrend = filteredPosts
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    .map(p => ({
+      name: format(new Date(p.created_at), 'MMM dd'),
+      rate: p.reach > 0 ? parseFloat(((p.likes + p.comments + p.shares) / p.reach * 100).toFixed(2)) : 0,
+      fullContent: p.content
+    }));
+
+  const contentTypePerformance = [
+    { name: 'Articles', type: 'article' },
+    { name: 'Posts', type: 'post' },
+    { name: 'Videos', type: 'video' }
+  ].map(t => {
+    const typePosts = posts.filter(p => {
+      if (t.type === 'article') return p.content.includes('#article');
+      if (t.type === 'video') return !!p.video_url;
+      return !p.content.includes('#article') && !p.video_url;
+    });
+    const totalReach = typePosts.reduce((sum, p) => sum + (p.reach || 0), 0);
+    const totalEng = typePosts.reduce((sum, p) => sum + (p.likes + p.comments + p.shares), 0);
+    return {
+      name: t.name,
+      avgReach: typePosts.length > 0 ? Math.round(totalReach / typePosts.length) : 0,
+      avgEngagement: typePosts.length > 0 && totalReach > 0 ? parseFloat((totalEng / totalReach * 100).toFixed(2)) : 0
+    };
+  });
 
   const jobStatusData = [
     { name: 'Applied', value: jobApplications.filter(a => a.status === 'Applied').length, color: '#4f46e5' },
@@ -2911,8 +5346,23 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
 
   const jobAppData = getJobAppData();
 
+  // Sort posts by engagement for the table
+  const sortedPosts = [...filteredPosts].sort((a, b) => {
+    const engagementA = (a.likes || 0) + (a.comments || 0) + (a.shares || 0);
+    const engagementB = (b.likes || 0) + (b.comments || 0) + (b.shares || 0);
+    return engagementB - engagementA;
+  });
+
   return (
     <div className="space-y-8">
+      {/* Summary Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <StatCard label="Total Reach" value={totalReach.toLocaleString()} change="+12.5%" positive={true} />
+        <StatCard label="Total Impressions" value={totalImpressions.toLocaleString()} change="+8.2%" positive={true} />
+        <StatCard label="Total Engagement" value={totalEngagement.toLocaleString()} change="+5.1%" positive={true} />
+        <StatCard label="Avg. Engagement Rate" value={`${avgEngagementRate}%`} change="-1.2%" positive={false} />
+      </div>
+
       {/* Filters */}
       <div className="flex flex-col sm:flex-row items-center gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -2958,6 +5408,14 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
             <option value="thread">Thread</option>
           </select>
         </div>
+        {isFiltered && (
+          <button 
+            onClick={clearFilters}
+            className="text-xs font-bold text-indigo-600 hover:text-indigo-700 px-3 py-1.5 bg-indigo-50 rounded-lg transition-colors ml-auto"
+          >
+            Clear Filters
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -2968,6 +5426,47 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* LinkedIn Follower Growth */}
+        <div className="glass-card p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="font-display font-bold text-lg">LinkedIn Follower Growth</h3>
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded-full bg-[#0077b5]"></span>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Followers</span>
+            </div>
+          </div>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={linkedInGrowthData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                <CartesianGrid stroke="#e2e8f0" strokeDasharray="5 5" vertical={false} />
+                <XAxis 
+                  dataKey="name" 
+                  stroke="#94a3b8" 
+                  fontSize={10} 
+                  tickLine={false} 
+                  axisLine={false} 
+                  tickFormatter={(val) => format(new Date(val), 'MMM dd')}
+                />
+                <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
+                <Tooltip 
+                  contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                  labelStyle={{ fontWeight: 'bold', color: '#0f172a', marginBottom: '4px' }}
+                  labelFormatter={(val) => format(new Date(val), 'MMM dd, yyyy')}
+                  formatter={(value: any) => [value, 'Followers']}
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="followers" 
+                  stroke="#0077b5" 
+                  strokeWidth={3} 
+                  dot={{ r: 4, fill: '#0077b5', strokeWidth: 2, stroke: '#fff' }} 
+                  activeDot={{ r: 6, strokeWidth: 0 }} 
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
         {/* Reach vs Impressions Trend */}
         <div className="glass-card p-6">
           <h3 className="font-display font-bold text-lg mb-6">Reach vs Impressions</h3>
@@ -3026,19 +5525,32 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
 
         {/* Platform Performance */}
         <div className="glass-card p-6">
-          <h3 className="font-display font-bold text-lg mb-6">Platform Reach & Impressions</h3>
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="font-display font-bold text-lg">Platform Reach & Impressions</h3>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Click bar to filter</p>
+          </div>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={platformReachData} layout="vertical" margin={{ top: 5, right: 30, bottom: 5, left: 40 }}>
+              <BarChart 
+                data={platformReachData} 
+                layout="vertical" 
+                margin={{ top: 5, right: 30, bottom: 5, left: 40 }}
+                onClick={(data) => {
+                  if (data && data.activeLabel) {
+                    setPlatform(data.activeLabel.toString().toLowerCase());
+                  }
+                }}
+              >
                 <CartesianGrid stroke="#e2e8f0" strokeDasharray="5 5" horizontal={false} />
                 <XAxis type="number" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
                 <YAxis dataKey="platform" type="category" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
                 <Tooltip 
                   contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                  cursor={{ fill: '#f8fafc' }}
                 />
                 <Legend verticalAlign="top" align="right" height={36}/>
-                <Bar dataKey="reach" fill="#4f46e5" radius={[0, 4, 4, 0]} />
-                <Bar dataKey="impressions" fill="#10b981" radius={[0, 4, 4, 0]} />
+                <Bar dataKey="reach" fill="#4f46e5" radius={[0, 4, 4, 0]} className="cursor-pointer" />
+                <Bar dataKey="impressions" fill="#10b981" radius={[0, 4, 4, 0]} className="cursor-pointer" />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -3046,22 +5558,46 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
 
         {/* Follower Growth Trend per Platform */}
         <div className="glass-card p-6">
-          <h3 className="font-display font-bold text-lg mb-6">Follower Growth by Platform (Last 7 Days)</h3>
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="font-display font-bold text-lg">Follower Growth by Platform</h3>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Trend over time</p>
+          </div>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={platformFollowerData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+              <LineChart 
+                data={platformFollowerData} 
+                margin={{ top: 5, right: 20, bottom: 5, left: 0 }}
+              >
                 <CartesianGrid stroke="#e2e8f0" strokeDasharray="5 5" vertical={false} />
-                <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+                <XAxis 
+                  dataKey="name" 
+                  stroke="#94a3b8" 
+                  fontSize={10} 
+                  tickLine={false} 
+                  axisLine={false} 
+                  tickFormatter={(val) => format(new Date(val), 'MMM dd')}
+                />
+                <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
                 <Tooltip 
                   contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                   labelStyle={{ fontWeight: 'bold', color: '#0f172a', marginBottom: '4px' }}
+                  labelFormatter={(val) => format(new Date(val), 'MMM dd, yyyy')}
                 />
-                <Legend verticalAlign="top" align="right" height={36}/>
-                <Line type="monotone" dataKey="LinkedIn" stroke="#0077b5" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-                <Line type="monotone" dataKey="Twitter" stroke="#1da1f2" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-                <Line type="monotone" dataKey="Instagram" stroke="#e4405f" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-                <Line type="monotone" dataKey="Youtube" stroke="#ff0000" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+                <Legend 
+                  verticalAlign="top" 
+                  align="right" 
+                  height={36}
+                  onClick={(data) => {
+                    if (data && data.value) {
+                      setPlatform(data.value.toLowerCase());
+                    }
+                  }}
+                  className="cursor-pointer"
+                />
+                <Line type="monotone" dataKey="LinkedIn" stroke="#0077b5" strokeWidth={3} dot={false} activeDot={{ r: 6 }} />
+                <Line type="monotone" dataKey="Twitter" stroke="#1da1f2" strokeWidth={3} dot={false} activeDot={{ r: 6 }} />
+                <Line type="monotone" dataKey="Instagram" stroke="#e4405f" strokeWidth={3} dot={false} activeDot={{ r: 6 }} />
+                <Line type="monotone" dataKey="Youtube" stroke="#ff0000" strokeWidth={3} dot={false} activeDot={{ r: 6 }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -3069,18 +5605,52 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
 
         {/* Engagement Rate per Post */}
         <div className="glass-card p-6">
-          <h3 className="font-display font-bold text-lg mb-6">Engagement Rate per Post (%)</h3>
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="font-display font-bold text-lg">Engagement Rate Trend (%)</h3>
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded-full bg-indigo-500"></span>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rate %</span>
+            </div>
+          </div>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={engagementData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+              <LineChart data={engagementRateTrend} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
                 <CartesianGrid stroke="#e2e8f0" strokeDasharray="5 5" vertical={false} />
                 <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+                <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} unit="%" />
                 <Tooltip 
                   contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                  cursor={{ fill: '#f8fafc' }}
+                  formatter={(value: any) => [`${value}%`, 'Engagement Rate']}
                 />
-                <Bar dataKey="rate" fill="#10b981" radius={[4, 4, 0, 0]} />
+                <Line 
+                  type="monotone" 
+                  dataKey="rate" 
+                  stroke="#4f46e5" 
+                  strokeWidth={3} 
+                  dot={{ r: 4, fill: '#4f46e5', strokeWidth: 2, stroke: '#fff' }} 
+                  activeDot={{ r: 6, strokeWidth: 0 }} 
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Content Type Performance Comparison */}
+        <div className="glass-card p-6">
+          <h3 className="font-display font-bold text-lg mb-6">Content Type Performance (Avg. Reach vs Engagement)</h3>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={contentTypePerformance} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                <CartesianGrid stroke="#e2e8f0" strokeDasharray="5 5" vertical={false} />
+                <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+                <YAxis yAxisId="left" orientation="left" stroke="#4f46e5" fontSize={10} tickLine={false} axisLine={false} />
+                <YAxis yAxisId="right" orientation="right" stroke="#10b981" fontSize={10} tickLine={false} axisLine={false} unit="%" />
+                <Tooltip 
+                  contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                />
+                <Legend verticalAlign="top" align="right" height={36}/>
+                <Bar yAxisId="left" dataKey="avgReach" name="Avg. Reach" fill="#4f46e5" radius={[4, 4, 0, 0]} barSize={30} />
+                <Bar yAxisId="right" dataKey="avgEngagement" name="Avg. Engagement %" fill="#10b981" radius={[4, 4, 0, 0]} barSize={30} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -3088,7 +5658,10 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
 
         {/* Top Content Types */}
         <div className="glass-card p-6">
-          <h3 className="font-display font-bold text-lg mb-6">Content Type Performance</h3>
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="font-display font-bold text-lg">Content Type Performance</h3>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Click slice to filter</p>
+          </div>
           <div className="h-64 flex items-center justify-center">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
@@ -3100,9 +5673,19 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
                   outerRadius={80}
                   paddingAngle={5}
                   dataKey="value"
+                  onClick={(data) => {
+                    if (data && data.name) {
+                      const typeMap: { [key: string]: string } = {
+                        'Articles': 'article',
+                        'Standard Posts': 'post',
+                        'Videos': 'video'
+                      };
+                      setPostType(typeMap[data.name] || 'all');
+                    }
+                  }}
                 >
                   {contentTypeData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
+                    <Cell key={`cell-${index}`} fill={entry.color} className="cursor-pointer outline-none" />
                   ))}
                 </Pie>
                 <Tooltip 
@@ -3126,7 +5709,7 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
                 <Tooltip 
                   contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                 />
-                <Line type="monotone" dataKey="apps" stroke="#f59e0b" strokeWidth={3} dot={{ r: 4 }} />
+                <Line type="monotone" dataKey="apps" stroke="#f59e0b" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -3161,29 +5744,64 @@ function AnalyticsView({ posts, followerGrowth, jobApplications }: { posts: any[
         </div>
       </div>
 
-      {/* Detailed Content Performance List */}
-      <div className="glass-card p-6">
-        <h3 className="font-display font-bold text-lg mb-6">Top Performing Content</h3>
-        <div className="space-y-4">
-          {[
-            { title: "Launched my new AI tool today! 🚀", engagement: "1.2K", platform: "linkedin", rate: "5.2%" },
-            { title: "Why React 19 is a game changer for devs...", engagement: "842", platform: "twitter", rate: "4.8%" },
-            { title: "My journey from junior to senior dev in 2 years", engagement: "654", platform: "linkedin", rate: "4.1%" }
-          ].map((item, i) => (
-            <div key={i} className="flex items-center gap-4 p-3 rounded-xl hover:bg-slate-50 transition-colors">
-              <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center shrink-0">
-                <PlatformIcon platform={item.platform} size={18} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-900 truncate">{item.title}</p>
-                <div className="flex items-center gap-3 mt-1">
-                  <span className="text-xs text-slate-500">{item.engagement} engagements</span>
-                  <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">{item.rate} rate</span>
-                </div>
-              </div>
-              <ArrowRight className="text-slate-300" size={16} />
-            </div>
-          ))}
+      {/* Detailed Content Performance Table */}
+      <div className="glass-card p-6 overflow-hidden">
+        <h3 className="font-display font-bold text-lg mb-6">Post Performance</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-slate-100">
+                <th className="pb-4 font-bold text-xs text-slate-400 uppercase tracking-widest">Platform</th>
+                <th className="pb-4 font-bold text-xs text-slate-400 uppercase tracking-widest">Content</th>
+                <th className="pb-4 font-bold text-xs text-slate-400 uppercase tracking-widest text-right">Likes</th>
+                <th className="pb-4 font-bold text-xs text-slate-400 uppercase tracking-widest text-right">Comments</th>
+                <th className="pb-4 font-bold text-xs text-slate-400 uppercase tracking-widest text-right">Shares</th>
+                <th className="pb-4 font-bold text-xs text-slate-400 uppercase tracking-widest text-right">Reach</th>
+                <th className="pb-4 font-bold text-xs text-slate-400 uppercase tracking-widest text-right">Impressions</th>
+                <th className="pb-4 font-bold text-xs text-slate-400 uppercase tracking-widest text-right">Engagement</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {sortedPosts.length > 0 ? (
+                sortedPosts.map((post) => {
+                  const engagement = (post.likes || 0) + (post.comments || 0) + (post.shares || 0);
+                  return (
+                    <tr key={post.id} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="py-4">
+                        <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center">
+                          <PlatformIcon platform={post.platform} size={16} />
+                        </div>
+                      </td>
+                      <td className="py-4 max-w-xs">
+                        <p className="text-sm font-medium text-slate-900 truncate" title={post.content}>
+                          {post.content}
+                        </p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">
+                          {format(new Date(post.created_at), 'MMM dd, yyyy')}
+                        </p>
+                      </td>
+                      <td className="py-4 text-sm text-slate-600 text-right">{(post.likes || 0).toLocaleString()}</td>
+                      <td className="py-4 text-sm text-slate-600 text-right">{(post.comments || 0).toLocaleString()}</td>
+                      <td className="py-4 text-sm text-slate-600 text-right">{(post.shares || 0).toLocaleString()}</td>
+                      <td className="py-4 text-sm text-slate-600 text-right">{(post.reach || 0).toLocaleString()}</td>
+                      <td className="py-4 text-sm text-slate-600 text-right">{(post.impressions || 0).toLocaleString()}</td>
+                      <td className="py-4 text-right">
+                        <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg">
+                          {engagement.toLocaleString()}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td colSpan={8} className="py-12 text-center text-slate-400 italic">
+                    No posts found for the selected filters.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -3259,6 +5877,30 @@ function JobTrackerView({ applications, onUpdate }: { applications: JobApplicati
     }
   };
 
+  const handleExportCSV = () => {
+    const headers = ['Company', 'Role', 'Date', 'Status', 'Notes'];
+    const csvContent = [
+      headers.join(','),
+      ...applications.map(app => [
+        `"${app.company.replace(/"/g, '""')}"`,
+        `"${app.role.replace(/"/g, '""')}"`,
+        `"${app.application_date.replace(/"/g, '""')}"`,
+        `"${app.status.replace(/"/g, '""')}"`,
+        `"${(app.notes || '').replace(/"/g, '""')}"`
+      ].join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', 'job_applications.csv');
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
@@ -3266,12 +5908,20 @@ function JobTrackerView({ applications, onUpdate }: { applications: JobApplicati
           <h3 className="text-2xl font-display font-bold text-slate-900">Job Tracker</h3>
           <p className="text-slate-500">Keep track of your job applications and their status.</p>
         </div>
-        <button 
-          onClick={() => setIsAdding(true)}
-          className="btn-primary flex items-center gap-2"
-        >
-          <Plus size={18} /> Add Application
-        </button>
+        <div className="flex gap-3">
+          <button 
+            onClick={handleExportCSV}
+            className="btn-secondary flex items-center gap-2"
+          >
+            <Download size={18} /> Export to CSV
+          </button>
+          <button 
+            onClick={() => setIsAdding(true)}
+            className="btn-primary flex items-center gap-2"
+          >
+            <Plus size={18} /> Add Application
+          </button>
+        </div>
       </div>
 
       <AnimatePresence>

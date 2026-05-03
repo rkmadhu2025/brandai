@@ -39,17 +39,19 @@ export async function generateSocialPost(topic: string, platform: string, tone: 
           TITLE: [Your Title Here]
           DESCRIPTION: [Your Description Here]`;
     } else if (platform === 'youtube-shorts') {
-      promptText = `Generate a highly engaging YouTube Shorts video title and description about: "${topic}". 
+      promptText = `Generate a highly engaging YouTube Shorts video title, description, and a 60-second script about: "${topic}". 
           Tone: ${tone}. 
           ${lengthInstruction}
           ${keywordsInstruction}
           ${extraInstructions}
           The title should be extremely catchy, short, and click-worthy.
           The description should be concise, include a strong hook, a brief summary, and relevant hashtags including #shorts.
+          The script should be optimized for a fast-paced 60-second vertical video format, including visual cues and a clear hook-value-cta structure.
           
           Format the output as:
           TITLE: [Your Title Here]
-          DESCRIPTION: [Your Description Here]`;
+          DESCRIPTION: [Your Description Here]
+          SCRIPT: [Your Script Here]`;
     }
 
     const response = await ai.models.generateContent({
@@ -83,7 +85,7 @@ export async function optimizeProfile(bio: string, skills: string, experience: s
           
           The JSON should include:
           - "headlineSuggestions": An array of 3-5 punchy, SEO-optimized headlines for LinkedIn/Twitter, specifically targeting the role of ${targetRole}.
-          - "optimizedSummary": A compelling professional summary that highlights their fit for ${targetRole}.
+          - "optimizedSummary": A concise and impactful professional summary (max 3-4 sentences) that strongly highlights key achievements, quantifiable results, and skills directly relevant to the ${targetRole} role.
           - "keywordRecommendations": A list of 5-10 high-impact SEO keywords for the ${targetRole} role and their industry.
           - "skillSuggestions": 3-5 new skills they should acquire based on current market demand for ${targetRole} positions.
           - "brandingAdvice": 2-3 specific tips to improve their online presence and visibility for ${targetRole} recruiters.
@@ -149,7 +151,7 @@ export async function rewriteContent(text: string, platform: string, tone: strin
           TITLE: [Your Title Here]
           DESCRIPTION: [Your Description Here]`;
     } else if (platform === 'youtube-shorts') {
-      promptText = `Rewrite the following content into a highly engaging YouTube Shorts video title and description with a ${tone} tone. 
+      promptText = `Rewrite the following content into a highly engaging YouTube Shorts video title, description, and a 60-second script with a ${tone} tone. 
           Content: "${text}"
           
           Requirements:
@@ -158,11 +160,13 @@ export async function rewriteContent(text: string, platform: string, tone: strin
           - ${extraInstructions}
           - The title should be extremely catchy, short, and click-worthy.
           - The description should be concise, include a strong hook, a brief summary, and relevant hashtags including #shorts.
+          - The script should be optimized for a fast-paced 60-second vertical video format, including visual cues and a clear hook-value-cta structure.
           - Maintain the core message but adapt the delivery for a short-form video audience.
           
           Format the output as:
           TITLE: [Your Title Here]
-          DESCRIPTION: [Your Description Here]`;
+          DESCRIPTION: [Your Description Here]
+          SCRIPT: [Your Script Here]`;
     }
 
     const response = await ai.models.generateContent({
@@ -304,6 +308,8 @@ export async function suggestJobs(userProfile: any, recentContent: string = "", 
           - "description": A short 1-sentence description of the role
           - "url": The direct link to the job posting or company careers page
           - "match_score": A number between 70 and 100 representing how well it matches the profile.
+          - "job_type": e.g., "Full-time", "Contract", "Freelance"
+          - "experience_level": e.g., "Junior", "Mid", "Senior", "Lead"
           
           Return ONLY the JSON array.`
         }]
@@ -321,9 +327,11 @@ export async function suggestJobs(userProfile: any, recentContent: string = "", 
               location: { type: Type.STRING },
               description: { type: Type.STRING },
               url: { type: Type.STRING },
-              match_score: { type: Type.NUMBER }
+              match_score: { type: Type.NUMBER },
+              job_type: { type: Type.STRING },
+              experience_level: { type: Type.STRING }
             },
-            required: ["title", "company", "location", "description", "url", "match_score"]
+            required: ["title", "company", "location", "description", "url", "match_score", "job_type", "experience_level"]
           }
         }
       }
@@ -335,20 +343,20 @@ export async function suggestJobs(userProfile: any, recentContent: string = "", 
   }
 }
 
-export async function suggestContentIdeas(userProfile: any, industry: string) {
+export async function suggestContentIdeas(userProfile: any, industry: string, targetRole: string = "") {
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: [{
         parts: [{
           text: `You are a social media strategist. Based on the user's profile and industry, suggest 5 creative and engaging post ideas.
-          Include a mix of platforms: LinkedIn, Twitter, and YouTube Shorts.
+          Include a mix of platforms: LinkedIn, Twitter, YouTube, and YouTube Shorts.
           For each idea, provide a catchy title, a brief description of the concept, and a full draft for the post.
           
           User Profile:
           - Bio: ${userProfile.bio}
           - Skills: ${userProfile.skills}
-          - Target Role: ${userProfile.target_role}
+          - Target Role: ${targetRole || userProfile.target_role}
           - Industry: ${industry}
           
           Consider current industry trends and the user's expertise.
@@ -357,8 +365,8 @@ export async function suggestContentIdeas(userProfile: any, industry: string) {
           - "id": A unique string ID
           - "title": A catchy title for the idea
           - "concept": A short description of why this post would work
-          - "draft": A complete, ready-to-use post draft. For YouTube Shorts, include Title and Description.
-          - "platform": One of "linkedin", "twitter", "youtube-shorts"
+          - "draft": A complete, ready-to-use post draft. For YouTube, include Title and Description.
+          - "platform": One of "linkedin", "twitter", "youtube", "youtube-shorts"
           
           Return ONLY the JSON array.`
         }]
@@ -421,16 +429,29 @@ export async function generateImage(prompt: string) {
   }
 }
 
-export async function generateVideo(prompt: string) {
+export async function generateVideo(prompt: string, style: string = "professional", length: string = "medium", resolution: '720p' | '1080p' = '720p', aspectRatio: '16:9' | '9:16' = '16:9') {
   try {
-    const aiVideo = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+    const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY || "";
+    const aiVideo = new GoogleGenAI({ apiKey });
+    
+    let styleDescription = "Professional, high-quality social media video";
+    if (style === "cinematic") styleDescription = "Cinematic lighting, high dynamic range, epic feel, movie-like quality";
+    if (style === "realistic") styleDescription = "Natural lighting, lifelike textures, realistic movements, documentary style";
+    if (style === "professional") styleDescription = "Clean, corporate, high-end production value, polished look";
+    if (style === "creative") styleDescription = "Artistic, vibrant colors, unique visual style, experimental and bold";
+    if (style === "minimalist") styleDescription = "Simple, clean lines, uncluttered composition, focused and elegant";
+
+    let lengthInstruction = "around 10-15 seconds";
+    if (length === "short") lengthInstruction = "around 5-10 seconds";
+    if (length === "long") lengthInstruction = "around 20-30 seconds";
+
     let operation = await aiVideo.models.generateVideos({
-      model: 'veo-3.1-fast-generate-preview',
-      prompt: `Create a professional, high-quality social media video for: "${prompt}". Style: Modern, clean, professional, suitable for LinkedIn or Twitter.`,
+      model: 'veo-3.1-lite-generate-preview',
+      prompt: `Create a ${styleDescription} for: "${prompt}". Target length: ${lengthInstruction}.`,
       config: {
         numberOfVideos: 1,
-        resolution: '720p',
-        aspectRatio: '16:9'
+        resolution: resolution,
+        aspectRatio: aspectRatio
       }
     });
 
@@ -445,7 +466,7 @@ export async function generateVideo(prompt: string) {
     const response = await fetch(downloadLink, {
       method: 'GET',
       headers: {
-        'x-goog-api-key': process.env.GEMINI_API_KEY || "",
+        'x-goog-api-key': apiKey,
       },
     });
 
